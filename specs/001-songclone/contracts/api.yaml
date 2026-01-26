@@ -1,0 +1,748 @@
+openapi: 3.1.0
+info:
+  title: SongClone API
+  version: 1.0.0
+  description: API for the SongClone agentic song recreation system
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+paths:
+  /api/sessions:
+    post:
+      operationId: createSession
+      summary: Create a new recreation session
+      description: Upload an audio file and start a new recreation session
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - audio
+              properties:
+                audio:
+                  type: string
+                  format: binary
+                  description: Audio file (WAV or MP3, max 10 minutes)
+                max_iterations:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  default: 10
+                  description: Maximum number of iterations
+                quality_threshold:
+                  type: number
+                  minimum: 0.0
+                  maximum: 1.0
+                  default: 0.8
+                  description: Quality threshold to stop (0.8 = 80% = 48/60)
+      responses:
+        '201':
+          description: Session created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCreated'
+        '400':
+          description: Invalid audio file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sessions/{session_id}:
+    get:
+      operationId: getSession
+      summary: Get session details
+      description: Retrieve current state of a session
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sessions/{session_id}/events:
+    get:
+      operationId: streamEvents
+      summary: Stream session events (SSE)
+      description: Server-Sent Events stream for real-time updates
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SSEEvent'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sessions/{session_id}/cancel:
+    post:
+      operationId: cancelSession
+      summary: Cancel session
+      description: Stop the iteration loop and preserve completed iterations
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Session cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Session not in cancellable state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sessions/{session_id}/resume:
+    post:
+      operationId: resumeSession
+      summary: Resume paused session
+      description: Resume after human action completed
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Session resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Session not in paused state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sessions/{session_id}/audio/original:
+    get:
+      operationId: getOriginalAudio
+      summary: Get original uploaded audio
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Audio file
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Session or audio not found
+
+  /api/sessions/{session_id}/audio/iteration/{iteration}:
+    get:
+      operationId: getIterationAudio
+      summary: Get rendered audio for an iteration
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: iteration
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Audio file
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Session or iteration not found
+
+  /api/sessions/{session_id}/download:
+    get:
+      operationId: downloadBestResult
+      summary: Download best recreation
+      description: Download the highest-scoring iteration as WAV
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Best recreation WAV file
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="songclone_best.wav"
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Session not found or no iterations completed
+
+components:
+  schemas:
+    SessionCreated:
+      type: object
+      required:
+        - session_id
+        - session_url
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        session_url:
+          type: string
+          format: uri
+          description: URL to view session (for reconnection)
+
+    Session:
+      type: object
+      required:
+        - id
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [uploading, analyzing, iterating, paused, completed, failed, cancelled]
+        song_spec:
+          $ref: '#/components/schemas/SongSpec'
+        iterations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Iteration'
+        current_iteration:
+          type: integer
+        max_iterations:
+          type: integer
+        quality_threshold:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        error:
+          type: string
+
+    SongSpec:
+      type: object
+      required:
+        - metadata
+        - stems
+        - structure
+        - chords
+      properties:
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        stems:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/StemData'
+        structure:
+          $ref: '#/components/schemas/Structure'
+        chords:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChordEvent'
+
+    Metadata:
+      type: object
+      required:
+        - duration_seconds
+        - tempo_bpm
+        - time_signature
+        - key
+      properties:
+        duration_seconds:
+          type: number
+        tempo_bpm:
+          type: number
+        time_signature:
+          type: string
+        key:
+          type: string
+
+    StemData:
+      type: object
+      required:
+        - role
+        - audio_path
+        - midi_data
+      properties:
+        role:
+          type: string
+          enum: [vocals, drums, bass, other]
+        audio_path:
+          type: string
+        midi_data:
+          type: string
+          description: Base64-encoded MIDI
+        analysis:
+          type: object
+
+    Structure:
+      type: object
+      required:
+        - sections
+      properties:
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/Section'
+
+    Section:
+      type: object
+      required:
+        - name
+        - start
+        - end
+        - bars
+      properties:
+        name:
+          type: string
+        start:
+          type: number
+        end:
+          type: number
+        bars:
+          type: integer
+
+    ChordEvent:
+      type: object
+      required:
+        - time
+        - duration
+        - chord
+      properties:
+        time:
+          type: number
+        duration:
+          type: number
+        chord:
+          type: string
+
+    Iteration:
+      type: object
+      required:
+        - number
+        - plan
+        - status
+        - started_at
+      properties:
+        number:
+          type: integer
+        plan:
+          $ref: '#/components/schemas/ExecutionPlan'
+        render_path:
+          type: string
+        evaluation:
+          $ref: '#/components/schemas/EvaluationResult'
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [planning, executing, evaluating, completed, failed]
+
+    ExecutionPlan:
+      type: object
+      required:
+        - reasoning
+        - tracks
+      properties:
+        reasoning:
+          type: string
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrackPlan'
+        master_fx:
+          type: array
+          items:
+            $ref: '#/components/schemas/FXConfig'
+
+    TrackPlan:
+      type: object
+      required:
+        - name
+        - role
+        - instrument
+        - midi_source
+        - mix
+      properties:
+        name:
+          type: string
+        role:
+          type: string
+          enum: [vocals, drums, bass, other, master]
+        instrument:
+          $ref: '#/components/schemas/InstrumentConfig'
+        midi_source:
+          type: string
+        midi_transform:
+          $ref: '#/components/schemas/MidiTransform'
+        mix:
+          $ref: '#/components/schemas/MixSettings'
+        fx:
+          type: array
+          items:
+            $ref: '#/components/schemas/FXConfig'
+
+    InstrumentConfig:
+      type: object
+      required:
+        - vst
+      properties:
+        vst:
+          type: string
+        preset:
+          type: string
+
+    MidiTransform:
+      type: object
+      properties:
+        transpose:
+          type: integer
+        velocity_scale:
+          type: number
+
+    MixSettings:
+      type: object
+      required:
+        - volume_db
+        - pan
+      properties:
+        volume_db:
+          type: number
+        pan:
+          type: number
+        mute:
+          type: boolean
+          default: false
+
+    FXConfig:
+      type: object
+      required:
+        - plugin
+      properties:
+        plugin:
+          type: string
+        preset:
+          type: string
+        params:
+          type: object
+
+    EvaluationResult:
+      type: object
+      required:
+        - scores
+        - total_score
+        - max_score
+        - feedback
+        - evaluation_method
+      properties:
+        scores:
+          $ref: '#/components/schemas/Scores'
+        total_score:
+          type: integer
+        max_score:
+          type: integer
+        feedback:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackItem'
+        stop_early:
+          type: boolean
+        stop_reason:
+          type: string
+        evaluation_method:
+          type: string
+          enum: [ai, mfcc_fallback]
+
+    Scores:
+      type: object
+      required:
+        - timing
+        - harmony
+        - melody
+        - instruments
+        - mix
+        - overall
+      properties:
+        timing:
+          type: integer
+          minimum: 1
+          maximum: 10
+        harmony:
+          type: integer
+          minimum: 1
+          maximum: 10
+        melody:
+          type: integer
+          minimum: 1
+          maximum: 10
+        instruments:
+          type: integer
+          minimum: 1
+          maximum: 10
+        mix:
+          type: integer
+          minimum: 1
+          maximum: 10
+        overall:
+          type: integer
+          minimum: 1
+          maximum: 10
+
+    FeedbackItem:
+      type: object
+      required:
+        - priority
+        - category
+        - issue
+        - suggestion
+      properties:
+        priority:
+          type: integer
+        category:
+          type: string
+          enum: [timing, harmony, melody, instruments, mix, other]
+        issue:
+          type: string
+        suggestion:
+          type: string
+
+    SSEEvent:
+      oneOf:
+        - $ref: '#/components/schemas/PhaseEvent'
+        - $ref: '#/components/schemas/IterationEvent'
+        - $ref: '#/components/schemas/StepEvent'
+        - $ref: '#/components/schemas/LogEvent'
+        - $ref: '#/components/schemas/AudioEvent'
+        - $ref: '#/components/schemas/HumanActionEvent'
+        - $ref: '#/components/schemas/CompleteEvent'
+        - $ref: '#/components/schemas/ErrorEvent'
+
+    PhaseEvent:
+      type: object
+      required:
+        - type
+        - phase
+        - status
+      properties:
+        type:
+          type: string
+          const: phase
+        phase:
+          type: string
+          enum: [analysis, iteration]
+        status:
+          type: string
+          enum: [started, complete]
+        data:
+          type: object
+
+    IterationEvent:
+      type: object
+      required:
+        - type
+        - number
+        - status
+      properties:
+        type:
+          type: string
+          const: iteration
+        number:
+          type: integer
+        status:
+          type: string
+          enum: [started, complete]
+
+    StepEvent:
+      type: object
+      required:
+        - type
+        - step
+        - status
+      properties:
+        type:
+          type: string
+          const: step
+        step:
+          type: string
+          enum: [planning, execution, evaluation]
+        status:
+          type: string
+          enum: [started, complete]
+        data:
+          type: object
+
+    LogEvent:
+      type: object
+      required:
+        - type
+        - level
+        - message
+      properties:
+        type:
+          type: string
+          const: log
+        level:
+          type: string
+          enum: [info, warn, error]
+        message:
+          type: string
+
+    AudioEvent:
+      type: object
+      required:
+        - type
+        - iteration
+        - path
+      properties:
+        type:
+          type: string
+          const: audio
+        iteration:
+          type: integer
+        path:
+          type: string
+
+    HumanActionEvent:
+      type: object
+      required:
+        - type
+        - description
+        - reason
+        - steps
+      properties:
+        type:
+          type: string
+          const: human_action_required
+        description:
+          type: string
+        reason:
+          type: string
+        steps:
+          type: array
+          items:
+            type: string
+
+    CompleteEvent:
+      type: object
+      required:
+        - type
+        - reason
+        - iterations
+      properties:
+        type:
+          type: string
+          const: complete
+        reason:
+          type: string
+          enum: [threshold_reached, max_iterations, cancelled]
+        iterations:
+          type: integer
+
+    ErrorEvent:
+      type: object
+      required:
+        - type
+        - message
+        - recoverable
+      properties:
+        type:
+          type: string
+          const: error
+        message:
+          type: string
+        recoverable:
+          type: boolean
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string

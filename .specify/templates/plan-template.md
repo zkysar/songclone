@@ -31,7 +31,18 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+| Principle | Requirement | Status |
+|-----------|-------------|--------|
+| I. Stack | Uses Google ADK, Gemini 3 Pro, file-based state only | [ ] |
+| II. Agent Design | Single responsibility, Pydantic schemas, prompts in `/orchestrator/prompts/` | [ ] |
+| III. MCP & Tools | Batch ops preferred, typed responses, idempotent, REAPER verification | [ ] |
+| IV. Error Handling | SSE on errors, graceful VST fallback, parallel analysis, max 3 retries | [ ] |
+| V. Human-in-the-Loop | 3 alternatives before help, `human_action_required` events, pause/verify | [ ] |
+| VI. Hackathon | UI-demonstrable, no premature optimization, skip auth/persistence | [ ] |
+| VII. Code Standards | Type hints required, no "what" comments, minimal testing | [ ] |
+| VIII. Gemini 3 | Correct `thinking_level`, few-shot examples, WAV audio, <4000 token prompts | [ ] |
+| IX. Prompts | System=role+constraints, user=task+data, concrete criteria, scoring rubrics | [ ] |
+| X. UI Events | Typed events (TS/Python match), auto-play disabled | [ ] |
 
 ## Project Structure
 

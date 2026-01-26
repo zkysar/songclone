@@ -1,0 +1,300 @@
+{
+  "name": "reaper-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for REAPER DAW batch operations",
+  "tools": [
+    {
+      "name": "create_project",
+      "description": "Initialize a new REAPER project with tempo and time signature",
+      "inputSchema": {
+        "type": "object",
+        "required": ["tempo", "time_signature", "duration_seconds"],
+        "properties": {
+          "tempo": {
+            "type": "number",
+            "description": "Tempo in BPM",
+            "minimum": 20,
+            "maximum": 300
+          },
+          "time_signature": {
+            "type": "string",
+            "description": "Time signature, e.g., '4/4'",
+            "pattern": "^\\d+/\\d+$"
+          },
+          "duration_seconds": {
+            "type": "number",
+            "description": "Project duration in seconds",
+            "minimum": 1
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "project_path"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "project_path": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "batch_create_tracks",
+      "description": "Create multiple tracks with instruments in one call",
+      "inputSchema": {
+        "type": "object",
+        "required": ["tracks"],
+        "properties": {
+          "tracks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "instrument_vst"],
+              "properties": {
+                "name": { "type": "string" },
+                "instrument_vst": {
+                  "type": "string",
+                  "description": "VST plugin name, e.g., 'Vital', 'ReaSynth'"
+                },
+                "instrument_preset": {
+                  "type": "string",
+                  "description": "Preset name (optional)"
+                },
+                "color": {
+                  "type": "string",
+                  "description": "Track color in hex, e.g., '#FF5500'"
+                }
+              }
+            }
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "track_ids"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "track_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "requested": { "type": "string" },
+                "used": { "type": "string" },
+                "reason": { "type": "string" }
+              }
+            },
+            "description": "List of VSTs that fell back to alternatives"
+          }
+        }
+      }
+    },
+    {
+      "name": "batch_insert_midi",
+      "description": "Insert MIDI data into multiple tracks",
+      "inputSchema": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["track_id", "midi_data"],
+              "properties": {
+                "track_id": { "type": "string" },
+                "midi_data": {
+                  "type": "string",
+                  "description": "Base64-encoded MIDI file"
+                },
+                "start_time": {
+                  "type": "number",
+                  "description": "Start time in seconds",
+                  "default": 0
+                },
+                "velocity_scale": {
+                  "type": "number",
+                  "description": "Velocity multiplier (0-2)",
+                  "minimum": 0,
+                  "maximum": 2,
+                  "default": 1
+                }
+              }
+            }
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "items_inserted"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "items_inserted": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "batch_set_fx",
+      "description": "Add/configure FX chains on multiple tracks",
+      "inputSchema": {
+        "type": "object",
+        "required": ["fx_configs"],
+        "properties": {
+          "fx_configs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["track_id", "fx_chain"],
+              "properties": {
+                "track_id": { "type": "string" },
+                "fx_chain": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["plugin"],
+                    "properties": {
+                      "plugin": {
+                        "type": "string",
+                        "description": "Plugin name, e.g., 'ReaEQ', 'ReaComp'"
+                      },
+                      "preset": { "type": "string" },
+                      "params": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "fx_added"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "fx_added": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "batch_set_levels",
+      "description": "Set volume, pan, mute for multiple tracks",
+      "inputSchema": {
+        "type": "object",
+        "required": ["levels"],
+        "properties": {
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["track_id"],
+              "properties": {
+                "track_id": { "type": "string" },
+                "volume_db": {
+                  "type": "number",
+                  "description": "Volume in dB",
+                  "minimum": -60,
+                  "maximum": 12
+                },
+                "pan": {
+                  "type": "number",
+                  "description": "Pan (-1 to 1)",
+                  "minimum": -1,
+                  "maximum": 1
+                },
+                "mute": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "tracks_updated"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "tracks_updated": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "render_audio",
+      "description": "Render project to audio file",
+      "inputSchema": {
+        "type": "object",
+        "required": ["output_path"],
+        "properties": {
+          "output_path": {
+            "type": "string",
+            "description": "Output file path"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["wav"],
+            "default": "wav",
+            "description": "Output format (WAV only per constitution)"
+          },
+          "start_time": {
+            "type": "number",
+            "description": "Start time for partial render (optional)"
+          },
+          "end_time": {
+            "type": "number",
+            "description": "End time for partial render (optional)"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "path", "duration"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "path": { "type": "string" },
+          "duration": {
+            "type": "number",
+            "description": "Rendered duration in seconds"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_project_state",
+      "description": "Get current state of all tracks for verification",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "tracks"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "tracks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "name"],
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "instrument": { "type": "string" },
+                "volume_db": { "type": "number" },
+                "pan": { "type": "number" },
+                "mute": { "type": "boolean" },
+                "has_midi": { "type": "boolean" },
+                "midi_item_count": { "type": "integer" },
+                "fx_count": { "type": "integer" }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
