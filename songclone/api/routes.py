@@ -48,6 +48,7 @@ async def create_new_session(
     background_tasks: BackgroundTasks,
     audio: UploadFile = File(...),
     max_iterations: int = Form(10),
+    min_iterations: int = Form(5),
     quality_threshold: float = Form(0.8),
 ) -> SessionCreated:
     """
@@ -67,6 +68,18 @@ async def create_new_session(
             detail="max_iterations must be between 1 and 20",
         )
 
+    if not 1 <= min_iterations <= 20:
+        raise HTTPException(
+            status_code=400,
+            detail="min_iterations must be between 1 and 20",
+        )
+
+    if min_iterations > max_iterations:
+        raise HTTPException(
+            status_code=400,
+            detail="min_iterations cannot exceed max_iterations",
+        )
+
     if not 0.0 <= quality_threshold <= 1.0:
         raise HTTPException(
             status_code=400,
@@ -75,6 +88,7 @@ async def create_new_session(
 
     session = create_session(
         max_iterations=max_iterations,
+        min_iterations=min_iterations,
         quality_threshold=quality_threshold,
     )
 

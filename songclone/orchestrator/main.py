@@ -187,8 +187,8 @@ async def run_recreation_loop(session: Session) -> None:
                 f"Iteration {iteration_num} complete: {evaluation.total_score}/{evaluation.max_score}",
             )
 
-            # Check for early stopping
-            if evaluation.stop_early:
+            # Check for early stopping (only after min_iterations)
+            if evaluation.stop_early and iteration_num >= session.min_iterations:
                 session.status = SessionStatus.COMPLETED
                 save_session(session)
 
@@ -204,6 +204,12 @@ async def run_recreation_loop(session: Session) -> None:
                     f"Quality threshold reached! Final score: {evaluation.total_score}/{evaluation.max_score}",
                 )
                 return
+
+            if evaluation.stop_early and iteration_num < session.min_iterations:
+                await _log(
+                    session.id,
+                    f"Threshold met but continuing (iteration {iteration_num}/{session.min_iterations} min)",
+                )
 
             # Store evaluation for next iteration's planning
             previous_evaluation = evaluation.model_dump()

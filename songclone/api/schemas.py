@@ -46,6 +46,7 @@ class Session(BaseModel):
     iterations: list[Iteration] = Field(default_factory=list)
     current_iteration: int = Field(0, ge=0)
     max_iterations: int = Field(10, ge=1, le=20)
+    min_iterations: int = Field(5, ge=1, le=20)
     quality_threshold: float = Field(0.8, ge=0.0, le=1.0)
     created_at: datetime
     updated_at: datetime

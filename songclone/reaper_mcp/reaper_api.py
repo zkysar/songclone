@@ -456,9 +456,9 @@ class ReaperAPI:
         project = self.get_project()
 
         try:
-            # SetTempoTimeSigMarker(proj, ptidx, timepos, bpm, timesig_num, timesig_denom, lineartempo)
-            # ptidx=-1 adds new marker, bpm=-1 keeps current tempo unchanged
-            self._RPR.SetTempoTimeSigMarker(project.id, -1, 0.0, -1, numerator, denominator, False)
+            # SetTempoTimeSigMarker(proj, ptidx, timepos, measurepos, beatpos, bpm, timesig_num, timesig_denom, lineartempo)
+            # ptidx=-1 adds new marker, measurepos/beatpos=-1 to use timepos, bpm=-1 keeps current tempo
+            self._RPR.SetTempoTimeSigMarker(project.id, -1, 0.0, -1, -1.0, -1, numerator, denominator, False)
             logger.info(f"Set time signature to {numerator}/{denominator}")
             return True
         except Exception as e:

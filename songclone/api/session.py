@@ -26,6 +26,7 @@ def _session_json_path(session_id: str) -> Path:
 
 def create_session(
     max_iterations: int = 10,
+    min_iterations: int = 5,
     quality_threshold: float = 0.8,
 ) -> Session:
     """Create a new session with a unique ID and initialize its directory."""
@@ -42,6 +43,7 @@ def create_session(
         id=session_id,
         status=SessionStatus.UPLOADING,
         max_iterations=max_iterations,
+        min_iterations=min_iterations,
         quality_threshold=quality_threshold,
         created_at=now,
         updated_at=now,

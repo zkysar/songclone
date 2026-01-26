@@ -95,10 +95,10 @@ Provide detailed scores and actionable feedback for improvement.
         response = client.models.generate_content(
             model="gemini-3-pro-preview",
             contents=[
-                types.Part.from_bytes(original_audio, mime_type="audio/wav"),
-                types.Part.from_text("Original audio above. Recreation audio below:"),
-                types.Part.from_bytes(recreation_audio, mime_type="audio/wav"),
-                types.Part.from_text(user_message),
+                types.Part.from_bytes(data=original_audio, mime_type="audio/wav"),
+                types.Part.from_text(text="Original audio above. Recreation audio below:"),
+                types.Part.from_bytes(data=recreation_audio, mime_type="audio/wav"),
+                types.Part.from_text(text=user_message),
             ],
             config={
                 "system_instruction": system_prompt,
