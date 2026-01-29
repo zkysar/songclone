@@ -37,7 +37,7 @@ pip install torch torchaudio  # with CUDA support if available
 ### 1. Clone and Setup
 
 ```bash
-cd /path/to/test-audio-analysis
+cd /path/to/songclone
 git checkout 001-songclone
 
 # Create Python virtual environment
