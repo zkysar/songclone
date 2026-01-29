@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { UploadArea } from './components/UploadArea';
 import { EventLog } from './components/EventLog';
+import { Timeline } from './components/Timeline';
 import { IterationTimeline } from './components/IterationTimeline';
 import { IterationDetail } from './components/IterationDetail';
 import { AudioComparison } from './components/AudioComparison';
@@ -23,6 +24,7 @@ import {
 } from './types/events';
 
 type AppState = 'idle' | 'uploading' | 'analyzing' | 'iterating' | 'complete' | 'error';
+type ViewMode = 'timeline' | 'log';
 
 function App() {
   const [appState, setAppState] = useState<AppState>('idle');
@@ -32,6 +34,7 @@ function App() {
   const [currentIteration, setCurrentIteration] = useState(0);
   const [selectedIteration, setSelectedIteration] = useState<number | null>(null);
   const [showComparison, setShowComparison] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('timeline');
   const [humanAction, setHumanAction] = useState<{
     description: string;
     reason: string;
@@ -315,8 +318,36 @@ function App() {
 
         {(appState === 'analyzing' || appState === 'iterating' || appState === 'complete') && (
           <div className="bg-gray-800 rounded-lg p-4">
-            <h2 className="text-lg font-semibold mb-4">Activity Log</h2>
-            <EventLog events={events} />
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Activity Log</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setViewMode('timeline')}
+                  className={`px-3 py-1.5 text-sm rounded transition-colors ${
+                    viewMode === 'timeline'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  Timeline
+                </button>
+                <button
+                  onClick={() => setViewMode('log')}
+                  className={`px-3 py-1.5 text-sm rounded transition-colors ${
+                    viewMode === 'log'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  Simple Log
+                </button>
+              </div>
+            </div>
+            {viewMode === 'timeline' ? (
+              <Timeline events={events} />
+            ) : (
+              <EventLog events={events} />
+            )}
           </div>
         )}
 

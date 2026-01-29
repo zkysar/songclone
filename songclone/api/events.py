@@ -1,10 +1,17 @@
 """SSE event schemas and broadcasting infrastructure."""
 
 import asyncio
+from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, Optional, Union
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+
+class TimestampedEvent(BaseModel):
+    """Base class for all SSE events with automatic timestamps."""
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
 class PhaseType(str, Enum):
@@ -35,55 +42,114 @@ class CompleteReason(str, Enum):
     CANCELLED = "cancelled"
 
 
-class PhaseEvent(BaseModel):
+class PhaseEvent(TimestampedEvent):
     type: Literal["phase"] = "phase"
     phase: PhaseType
     status: EventStatus
     data: Optional[Any] = None
 
 
-class IterationEvent(BaseModel):
+class IterationEvent(TimestampedEvent):
     type: Literal["iteration"] = "iteration"
     number: int
     status: EventStatus
 
 
-class StepEvent(BaseModel):
+class StepEvent(TimestampedEvent):
     type: Literal["step"] = "step"
     step: StepType
     status: EventStatus
     data: Optional[Any] = None
 
 
-class LogEvent(BaseModel):
+class LogEvent(TimestampedEvent):
     type: Literal["log"] = "log"
     level: LogLevel
     message: str
 
 
-class AudioEvent(BaseModel):
+class AudioEvent(TimestampedEvent):
     type: Literal["audio"] = "audio"
     iteration: int
     path: str
 
 
-class HumanActionEvent(BaseModel):
+class HumanActionEvent(TimestampedEvent):
     type: Literal["human_action_required"] = "human_action_required"
     description: str = Field(..., description="What action is needed")
     reason: str = Field(..., description="Why automation failed")
     steps: list[str] = Field(..., description="Step-by-step instructions")
 
 
-class CompleteEvent(BaseModel):
+class PausedEvent(TimestampedEvent):
+    type: Literal["paused"] = "paused"
+    reason: str = Field(..., description="Why the session was paused")
+
+
+class CompleteEvent(TimestampedEvent):
     type: Literal["complete"] = "complete"
     reason: CompleteReason
     iterations: int = Field(..., description="Total iterations completed")
 
 
-class ErrorEvent(BaseModel):
+class ErrorEvent(TimestampedEvent):
     type: Literal["error"] = "error"
     message: str
     recoverable: bool
+
+
+class ReaperOperationType(str, Enum):
+    CREATE_PROJECT = "create_project"
+    BATCH_CREATE_TRACKS = "batch_create_tracks"
+    BATCH_INSERT_MIDI = "batch_insert_midi"
+    BATCH_SET_FX = "batch_set_fx"
+    BATCH_SET_LEVELS = "batch_set_levels"
+    RENDER_AUDIO = "render_audio"
+
+
+class ReaperOperationEvent(TimestampedEvent):
+    type: Literal["reaper_operation"] = "reaper_operation"
+    operation: ReaperOperationType
+    status: EventStatus
+    details: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class ToolCallEvent(TimestampedEvent):
+    """ADK tool call event."""
+    type: Literal["tool_call"] = "tool_call"
+    tool: str
+    call_id: str = Field(default_factory=lambda: str(uuid4())[:8])
+    args: Optional[dict[str, Any]] = None
+
+
+class ToolResponseEvent(TimestampedEvent):
+    """ADK tool response event."""
+    type: Literal["tool_response"] = "tool_response"
+    tool: str
+    call_id: str
+    status: str
+    result: Optional[dict[str, Any]] = None
+    duration_ms: Optional[int] = None
+
+
+class AgentResponseEvent(TimestampedEvent):
+    """ADK agent final response."""
+    type: Literal["agent_response"] = "agent_response"
+    content: str
+
+
+class AgentThinkingEvent(TimestampedEvent):
+    """ADK agent thinking/reasoning event."""
+    type: Literal["agent_thinking"] = "agent_thinking"
+    content: str
+    agent: str = "orchestrator"
+
+
+class TraceUrlEvent(TimestampedEvent):
+    """Langfuse trace URL for observability."""
+    type: Literal["trace_url"] = "trace_url"
+    url: str
 
 
 SSEEvent = Union[
@@ -93,8 +159,15 @@ SSEEvent = Union[
     LogEvent,
     AudioEvent,
     HumanActionEvent,
+    PausedEvent,
     CompleteEvent,
     ErrorEvent,
+    ReaperOperationEvent,
+    ToolCallEvent,
+    ToolResponseEvent,
+    AgentResponseEvent,
+    AgentThinkingEvent,
+    TraceUrlEvent,
 ]
 
 

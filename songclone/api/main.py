@@ -31,6 +31,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     sessions_dir = Path("sessions")
     sessions_dir.mkdir(exist_ok=True)
 
+    # Initialize Langfuse observability
+    try:
+        from songclone.orchestrator.langfuse_config import init_langfuse
+        if init_langfuse():
+            logger.info("Langfuse observability enabled")
+        else:
+            logger.info("Langfuse observability disabled (not configured)")
+    except ImportError:
+        logger.info("Langfuse not installed - observability disabled")
+
     yield
 
     logger.info("SongClone API shutting down...")

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,7 @@ class Session(BaseModel):
     created_at: datetime
     updated_at: datetime
     error: Optional[str] = None
+    pause_context: Optional[dict[str, Any]] = None
 
 
 class SessionCreated(BaseModel):

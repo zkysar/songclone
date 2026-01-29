@@ -6,7 +6,40 @@ import logging
 import tempfile
 from pathlib import Path
 
+from basic_pitch.inference import predict
+from basic_pitch import ICASSP_2022_MODEL_PATH
+
 logger = logging.getLogger(__name__)
+
+
+def _run_basic_pitch_sync(
+    audio_path: Path,
+    onset_threshold: float,
+    frame_threshold: float,
+    min_note_length: float,
+) -> str:
+    """Synchronous basic pitch MIDI extraction (CPU-intensive)."""
+    model_output, midi_data, note_events = predict(
+        str(audio_path),
+        ICASSP_2022_MODEL_PATH,
+        onset_threshold=onset_threshold,
+        frame_threshold=frame_threshold,
+        minimum_note_length=min_note_length,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as f:
+        midi_data.write(f.name)
+        midi_path = Path(f.name)
+
+    with open(midi_path, "rb") as f:
+        midi_bytes = f.read()
+
+    midi_path.unlink()
+
+    encoded = base64.b64encode(midi_bytes).decode("utf-8")
+    logger.info(f"Extracted MIDI ({len(note_events)} notes) from {audio_path}")
+
+    return encoded
 
 
 async def extract_midi(
@@ -30,34 +63,13 @@ async def extract_midi(
     logger.info(f"Extracting MIDI from {audio_path}")
 
     try:
-        from basic_pitch.inference import predict
-        from basic_pitch import ICASSP_2022_MODEL_PATH
-
-        model_output, midi_data, note_events = predict(
-            str(audio_path),
-            ICASSP_2022_MODEL_PATH,
-            onset_threshold=onset_threshold,
-            frame_threshold=frame_threshold,
-            minimum_note_length=min_note_length,
+        return await asyncio.to_thread(
+            _run_basic_pitch_sync,
+            audio_path,
+            onset_threshold,
+            frame_threshold,
+            min_note_length,
         )
-
-        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as f:
-            midi_data.write(f.name)
-            midi_path = Path(f.name)
-
-        with open(midi_path, "rb") as f:
-            midi_bytes = f.read()
-
-        midi_path.unlink()
-
-        encoded = base64.b64encode(midi_bytes).decode("utf-8")
-        logger.info(f"Extracted MIDI ({len(note_events)} notes) from {audio_path}")
-
-        return encoded
-
-    except ImportError:
-        logger.warning("Basic Pitch not available, returning empty MIDI")
-        return await _generate_empty_midi()
     except Exception as e:
         logger.error(f"MIDI extraction failed: {e}")
         return await _generate_empty_midi()

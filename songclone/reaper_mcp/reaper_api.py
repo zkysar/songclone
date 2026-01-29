@@ -128,6 +128,7 @@ class ReaperAPI:
         names_to_try = [
             fx_name,
             f"VST3i: {fx_name} ({fx_name} Audio)",  # VST3 instrument (e.g., Vital)
+            f"VST3i: {fx_name} (Digital Suburban)",  # VST3 instrument (e.g., Dexed)
             f"VSTi: {fx_name} (x86_64) ({fx_name} Audio)",  # VST2 instrument
             f"VST3: {fx_name} ({fx_name} Audio)",  # VST3 effect
             f"VST: {fx_name} (x86_64) ({fx_name} Audio)",  # VST2 effect
@@ -200,6 +201,37 @@ class ReaperAPI:
             return fx_list
         except Exception as e:
             logger.error(f"Failed to get FX list: {e}")
+            return []
+
+    def get_fx_params(self, track_index: int, fx_index: int) -> list[dict[str, Any]]:
+        """
+        Get all parameters available on an FX plugin.
+
+        Args:
+            track_index: 0-based track index
+            fx_index: 0-based FX index on the track
+
+        Returns:
+            List of dicts with 'index', 'name', and 'value' for each parameter
+        """
+        self.ensure_connected()
+        project = self.get_project()
+
+        try:
+            track = project.tracks[track_index]
+            fx = track.fxs[fx_index]
+
+            params = []
+            for i in range(fx.n_params):
+                param = fx.params[i]
+                params.append({
+                    "index": i,
+                    "name": param.name,
+                    "value": param.value,
+                })
+            return params
+        except Exception as e:
+            logger.error(f"Failed to get FX params: {e}")
             return []
 
     def create_midi_item(
@@ -383,7 +415,7 @@ class ReaperAPI:
 
         try:
             track = project.tracks[track_index]
-            track.pan = pan
+            self._RPR.SetMediaTrackInfo_Value(track.id, "D_PAN", pan)
             logger.info(f"Set track {track_index} pan to {pan}")
             return True
         except Exception as e:
@@ -397,7 +429,7 @@ class ReaperAPI:
 
         try:
             track = project.tracks[track_index]
-            track.mute = mute
+            self._RPR.SetMediaTrackInfo_Value(track.id, "B_MUTE", 1 if mute else 0)
             logger.info(f"Set track {track_index} mute to {mute}")
             return True
         except Exception as e:
@@ -430,12 +462,16 @@ class ReaperAPI:
             volume_linear = self._RPR.GetMediaTrackInfo_Value(track.id, "D_VOL")
             volume_db = 20 * math.log10(volume_linear) if volume_linear > 0 else -60
 
+            # Get pan and mute via ReaScript API (reapy Track may not have these attributes)
+            pan = self._RPR.GetMediaTrackInfo_Value(track.id, "D_PAN")
+            mute = bool(self._RPR.GetMediaTrackInfo_Value(track.id, "B_MUTE"))
+
             return {
                 "name": track.name,
                 "instrument": instrument,
                 "volume_db": round(volume_db, 2),
-                "pan": track.pan,
-                "mute": track.mute,
+                "pan": pan,
+                "mute": mute,
                 "has_midi": has_midi,
                 "midi_item_count": midi_item_count,
                 "fx_count": len(track.fxs),
@@ -479,9 +515,10 @@ class ReaperAPI:
         end: Optional[float] = None,
         samplerate: int = 44100,
         channels: int = 2,
+        format: str = "wav",
     ) -> Optional[str]:
         """
-        Render project to audio file.
+        Render project to audio file (non-disruptive, no dialog shown).
 
         Args:
             output_path: Output file path
@@ -489,6 +526,7 @@ class ReaperAPI:
             end: End time in seconds (optional, defaults to project length)
             samplerate: Sample rate (default 44100)
             channels: Number of channels (default 2)
+            format: Audio format - "wav", "mp3", "flac", "ogg" (default "wav")
 
         Returns:
             Output path if successful, None if failed
@@ -496,6 +534,16 @@ class ReaperAPI:
         self.ensure_connected()
         project = self.get_project()
         RPR = self._RPR
+
+        # Map format names to REAPER's 4-byte format codes
+        format_codes = {
+            "wav": "evaw",
+            "mp3": "l3pm",
+            "flac": "flac",
+            "ogg": "oggv",
+            "aiff": "ffia",
+        }
+        format_code = format_codes.get(format.lower(), "evaw")
 
         try:
             # Store current time selection
@@ -522,14 +570,18 @@ class ReaperAPI:
                 RPR.GetSetProjectInfo(project.id, "RENDER_CHANNELS", channels, True)
                 RPR.GetSetProjectInfo(project.id, "RENDER_SRATE", samplerate, True)
 
+                # Set render format (4-byte code for default settings of that format)
+                RPR.GetSetProjectInfo_String(project.id, "RENDER_FORMAT", format_code, True)
+
                 # RENDER_FILE = directory, RENDER_PATTERN = filename (without extension)
                 output_dir = os.path.dirname(output_path)
                 output_filename = os.path.splitext(os.path.basename(output_path))[0]
                 RPR.GetSetProjectInfo_String(project.id, "RENDER_FILE", output_dir, True)
                 RPR.GetSetProjectInfo_String(project.id, "RENDER_PATTERN", output_filename, True)
 
-                # Execute render (action 41824 = "File: Render project, using the most recent render settings")
-                self._reapy.perform_action(41824)
+                # Execute render with auto-close dialog (action 42230)
+                # This renders silently without user interaction
+                RPR.Main_OnCommand(42230, 0)
 
                 # Wait for render to complete
                 time.sleep(0.5)

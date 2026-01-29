@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import soundfile as sf
 
 from songclone.analysis.schemas import (
     BassAnalysis,
@@ -36,6 +38,18 @@ from songclone.api.events import (
 
 logger = logging.getLogger(__name__)
 
+ANALYSIS_DURATION_SECONDS = 30
+
+
+def _trim_audio(audio_path: Path, output_path: Path, max_seconds: float = ANALYSIS_DURATION_SECONDS) -> Path:
+    """Trim audio to first N seconds for faster analysis."""
+    data, sr = sf.read(str(audio_path))
+    max_samples = int(max_seconds * sr)
+    if len(data) > max_samples:
+        data = data[:max_samples]
+    sf.write(str(output_path), data, sr)
+    return output_path
+
 
 async def analyze_song(
     audio_path: Path,
@@ -56,16 +70,32 @@ async def analyze_song(
     Returns:
         Complete SongSpec with all analysis results
     """
+    print(f"=== ANALYZE_SONG ENTERED ===", flush=True)
+    logger.info(f"analyze_song called: audio_path={audio_path}, output_dir={output_dir}, session_id={session_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"=== ANALYZE_SONG output_dir created ===", flush=True)
+
+    # Trim to first 30 seconds for faster analysis
+    trimmed_path = output_dir / "trimmed_input.wav"
+    audio_path = _trim_audio(audio_path, trimmed_path)
+    print(f"=== Audio trimmed to {ANALYSIS_DURATION_SECONDS}s ===", flush=True)
+
     stems_dir = output_dir / "stems"
 
     if session_id:
+        print(f"=== Emitting ANALYSIS STARTED event ===", flush=True)
         await event_emitter.emit(
             session_id,
             PhaseEvent(phase=PhaseType.ANALYSIS, status=EventStatus.STARTED),
         )
+        print(f"=== ANALYSIS STARTED event emitted ===", flush=True)
+    else:
+        print(f"=== No session_id, skipping event emit ===", flush=True)
+
+    print(f"=== About to define log function ===", flush=True)
 
     async def log(message: str, level: LogLevel = LogLevel.INFO) -> None:
+        print(f"=== Inside log function: {message} ===", flush=True)
         logger.log(
             logging.INFO if level == LogLevel.INFO else logging.WARNING,
             message,
@@ -75,42 +105,40 @@ async def analyze_song(
                 session_id,
                 LogEvent(level=level, message=message),
             )
+        print(f"=== log function done ===", flush=True)
 
+    print(f"=== log function defined ===", flush=True)
+    print(f"=== About to call first log ===", flush=True)
     await log("Starting audio analysis...")
+    print(f"=== First log complete, starting stem separation ===", flush=True)
+
+    # Run analysis tasks SEQUENTIALLY to avoid threading deadlocks
+    # (parallel execution of C extension libraries causes GIL issues)
 
     await log("Separating stems with Demucs...")
-    stem_separation_task = asyncio.create_task(
-        _safe_separate_stems(audio_path, stems_dir)
-    )
+    print(f"=== Running stem separation (sequential) ===", flush=True)
+    stem_paths = await _safe_separate_stems(audio_path, stems_dir, log)
 
     await log("Detecting tempo and beats...")
-    beat_detection_task = asyncio.create_task(
-        _safe_detect_beats(audio_path)
-    )
+    print(f"=== Running beat detection (sequential) ===", flush=True)
+    beat_info = await _safe_detect_beats(audio_path, log, session_id)
 
     await log("Detecting key...")
-    key_detection_task = asyncio.create_task(
-        _safe_detect_key(audio_path)
-    )
+    print(f"=== Running key detection (sequential) ===", flush=True)
+    key = await _safe_detect_key(audio_path, log)
 
     await log("Detecting chords...")
-    chord_detection_task = asyncio.create_task(
-        _safe_detect_chords(audio_path)
-    )
+    print(f"=== Running chord detection (sequential) ===", flush=True)
+    chords = await _safe_detect_chords(audio_path, log)
 
-    stem_paths, beat_info, key, chords = await asyncio.gather(
-        stem_separation_task,
-        beat_detection_task,
-        key_detection_task,
-        chord_detection_task,
-    )
+    print(f"=== All 4 analysis tasks complete ===", flush=True)
 
     await log("Extracting MIDI from stems...")
     midi_tasks = {
-        "vocals": asyncio.create_task(_safe_extract_midi(stem_paths.vocals)),
-        "drums": asyncio.create_task(_safe_extract_midi(stem_paths.drums)),
-        "bass": asyncio.create_task(_safe_extract_midi(stem_paths.bass)),
-        "other": asyncio.create_task(_safe_extract_midi(stem_paths.other)),
+        "vocals": asyncio.create_task(_safe_extract_midi(stem_paths.vocals, "vocals", log)),
+        "drums": asyncio.create_task(_safe_extract_midi(stem_paths.drums, "drums", log)),
+        "bass": asyncio.create_task(_safe_extract_midi(stem_paths.bass, "bass", log)),
+        "other": asyncio.create_task(_safe_extract_midi(stem_paths.other, "other", log)),
     }
 
     midi_results = await asyncio.gather(*midi_tasks.values())
@@ -118,6 +146,7 @@ async def analyze_song(
 
     await log("Detecting song sections...")
     sections = detect_sections(beat_info, chords)
+    await log(f"✓ Section detection complete ({len(sections)} sections found)")
 
     duration = await _get_audio_duration(audio_path)
 
@@ -126,25 +155,37 @@ async def analyze_song(
             role=StemRole.VOCALS,
             audio_path=str(stem_paths.vocals),
             midi_data=midi_data["vocals"],
-            analysis=VocalsAnalysis(detected_range=VocalRange(low="C3", high="C5")),
+            analysis=VocalsAnalysis(
+                analysis_type="vocals",
+                detected_range=VocalRange(low="C3", high="C5"),
+            ),
         ),
         "drums": StemData(
             role=StemRole.DRUMS,
             audio_path=str(stem_paths.drums),
             midi_data=midi_data["drums"],
-            analysis=DrumsAnalysis(pattern_summary="Standard drum pattern"),
+            analysis=DrumsAnalysis(
+                analysis_type="drums",
+                pattern_summary="Standard drum pattern",
+            ),
         ),
         "bass": StemData(
             role=StemRole.BASS,
             audio_path=str(stem_paths.bass),
             midi_data=midi_data["bass"],
-            analysis=BassAnalysis(root_notes=_extract_root_notes(chords)),
+            analysis=BassAnalysis(
+                analysis_type="bass",
+                root_notes=_extract_root_notes(chords),
+            ),
         ),
         "other": StemData(
             role=StemRole.OTHER,
             audio_path=str(stem_paths.other),
             midi_data=midi_data["other"],
-            analysis=OtherAnalysis(instrument_guess="Keyboard, synth"),
+            analysis=OtherAnalysis(
+                analysis_type="other",
+                instrument_guess="Keyboard, synth",
+            ),
         ),
     }
 
@@ -175,12 +216,51 @@ async def analyze_song(
     return song_spec
 
 
-async def _safe_separate_stems(audio_path: Path, output_dir: Path) -> StemPaths:
-    """Safely run stem separation with error handling."""
+async def _run_with_heartbeat(
+    coro,
+    session_id: str,
+    task_name: str,
+    interval: float = 5.0
+):
+    """Run a coroutine with periodic heartbeat events."""
+    start_time = time.time()
+
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(interval)
+            elapsed = int(time.time() - start_time)
+            await event_emitter.emit(
+                session_id,
+                LogEvent(level=LogLevel.INFO, message=f"⏳ {task_name}... ({elapsed}s)")
+            )
+
+    heartbeat_task = asyncio.create_task(heartbeat())
     try:
-        return await separate_stems(audio_path, output_dir)
+        result = await coro
+        return result
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _safe_separate_stems(
+    audio_path: Path, output_dir: Path, log_fn=None
+) -> StemPaths:
+    """Safely run stem separation with error handling."""
+    print(f"=== _safe_separate_stems STARTED ===", flush=True)
+    try:
+        result = await separate_stems(audio_path, output_dir)
+        print(f"=== _safe_separate_stems DONE ===", flush=True)
+        if log_fn:
+            await log_fn("✓ Stem separation complete")
+        return result
     except Exception as e:
         logger.error(f"Stem separation failed: {e}")
+        if log_fn:
+            await log_fn(f"✗ Stem separation failed: {e}", LogLevel.WARN)
         output_dir.mkdir(parents=True, exist_ok=True)
         return StemPaths(
             vocals=output_dir / "vocals.wav",
@@ -190,12 +270,27 @@ async def _safe_separate_stems(audio_path: Path, output_dir: Path) -> StemPaths:
         )
 
 
-async def _safe_detect_beats(audio_path: Path) -> BeatInfo:
+async def _safe_detect_beats(audio_path: Path, log_fn=None, session_id: Optional[str] = None) -> BeatInfo:
     """Safely run beat detection with error handling."""
+    print(f"=== _safe_detect_beats STARTED ===", flush=True)
     try:
-        return await detect_beats(audio_path)
+        if session_id:
+            result = await _run_with_heartbeat(
+                detect_beats(audio_path),
+                session_id,
+                "Beat detection running",
+                interval=5.0
+            )
+        else:
+            result = await detect_beats(audio_path)
+        print(f"=== _safe_detect_beats DONE ===", flush=True)
+        if log_fn:
+            await log_fn("✓ Beat detection complete")
+        return result
     except Exception as e:
         logger.error(f"Beat detection failed: {e}")
+        if log_fn:
+            await log_fn(f"✗ Beat detection failed: {e}", LogLevel.WARN)
         return BeatInfo(
             tempo_bpm=120.0,
             time_signature="4/4",
@@ -204,32 +299,51 @@ async def _safe_detect_beats(audio_path: Path) -> BeatInfo:
         )
 
 
-async def _safe_detect_key(audio_path: Path) -> str:
+async def _safe_detect_key(audio_path: Path, log_fn=None) -> str:
     """Safely run key detection with error handling."""
+    print(f"=== _safe_detect_key STARTED ===", flush=True)
     try:
-        return await detect_key(audio_path)
+        result = await detect_key(audio_path)
+        print(f"=== _safe_detect_key DONE ===", flush=True)
+        if log_fn:
+            await log_fn("✓ Key detection complete")
+        return result
     except Exception as e:
         logger.error(f"Key detection failed: {e}")
+        if log_fn:
+            await log_fn(f"✗ Key detection failed: {e}", LogLevel.WARN)
         return "C major"
 
 
-async def _safe_detect_chords(audio_path: Path) -> list[ChordEvent]:
+async def _safe_detect_chords(audio_path: Path, log_fn=None) -> list[ChordEvent]:
     """Safely run chord detection with error handling."""
+    print(f"=== _safe_detect_chords STARTED ===", flush=True)
     try:
-        return await detect_chords(audio_path)
+        result = await detect_chords(audio_path)
+        print(f"=== _safe_detect_chords DONE ===", flush=True)
+        if log_fn:
+            await log_fn("✓ Chord detection complete")
+        return result
     except Exception as e:
         logger.error(f"Chord detection failed: {e}")
+        if log_fn:
+            await log_fn(f"✗ Chord detection failed: {e}", LogLevel.WARN)
         return []
 
 
-async def _safe_extract_midi(stem_path: Path) -> str:
+async def _safe_extract_midi(stem_path: Path, stem_name: str = "", log_fn=None) -> str:
     """Safely run MIDI extraction with error handling."""
     try:
         if not stem_path.exists() or stem_path.stat().st_size == 0:
             return ""
-        return await extract_midi(stem_path)
+        result = await extract_midi(stem_path)
+        if log_fn and stem_name:
+            await log_fn(f"✓ MIDI extraction complete ({stem_name})")
+        return result
     except Exception as e:
         logger.error(f"MIDI extraction failed for {stem_path}: {e}")
+        if log_fn and stem_name:
+            await log_fn(f"✗ MIDI extraction failed ({stem_name}): {e}", LogLevel.WARN)
         return ""
 
 

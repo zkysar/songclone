@@ -4,6 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+import librosa
 import numpy as np
 
 from songclone.analysis.schemas import ChordEvent
@@ -40,6 +41,56 @@ CHORD_TEMPLATES = {
 KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
+def _run_chord_detection_sync(
+    audio_path: Path,
+    hop_length: int,
+    min_duration: float,
+) -> list[ChordEvent]:
+    """Synchronous chord detection (CPU-intensive)."""
+    print(f"=== _run_chord_detection_sync ENTERED ===", flush=True)
+    print(f"=== chord: loading audio with librosa ===", flush=True)
+    y, sr = librosa.load(str(audio_path))
+    print(f"=== chord: audio loaded, computing chroma ===", flush=True)
+
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
+    print(f"=== chord: chroma computed ===", flush=True)
+
+    frame_duration = hop_length / sr
+    n_frames = chroma.shape[1]
+
+    chords: list[ChordEvent] = []
+    current_chord = None
+    chord_start = 0.0
+
+    for i in range(n_frames):
+        frame_chroma = chroma[:, i]
+        detected_chord = _match_chord(frame_chroma)
+
+        if detected_chord != current_chord:
+            if current_chord is not None:
+                duration = (i * frame_duration) - chord_start
+                if duration >= min_duration:
+                    chords.append(ChordEvent(
+                        time=chord_start,
+                        duration=duration,
+                        chord=current_chord,
+                    ))
+
+            current_chord = detected_chord
+            chord_start = i * frame_duration
+
+    if current_chord is not None:
+        duration = (n_frames * frame_duration) - chord_start
+        if duration >= min_duration:
+            chords.append(ChordEvent(
+                time=chord_start,
+                duration=duration,
+                chord=current_chord,
+            ))
+
+    return chords
+
+
 async def detect_chords(
     audio_path: Path,
     hop_length: int = 512,
@@ -59,51 +110,11 @@ async def detect_chords(
     logger.info(f"Detecting chords in {audio_path}")
 
     try:
-        import librosa
-
-        y, sr = librosa.load(str(audio_path))
-
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
-
-        frame_duration = hop_length / sr
-        n_frames = chroma.shape[1]
-
-        chords: list[ChordEvent] = []
-        current_chord = None
-        chord_start = 0.0
-
-        for i in range(n_frames):
-            frame_chroma = chroma[:, i]
-            detected_chord = _match_chord(frame_chroma)
-
-            if detected_chord != current_chord:
-                if current_chord is not None:
-                    duration = (i * frame_duration) - chord_start
-                    if duration >= min_duration:
-                        chords.append(ChordEvent(
-                            time=chord_start,
-                            duration=duration,
-                            chord=current_chord,
-                        ))
-
-                current_chord = detected_chord
-                chord_start = i * frame_duration
-
-        if current_chord is not None:
-            duration = (n_frames * frame_duration) - chord_start
-            if duration >= min_duration:
-                chords.append(ChordEvent(
-                    time=chord_start,
-                    duration=duration,
-                    chord=current_chord,
-                ))
-
+        chords = await asyncio.to_thread(
+            _run_chord_detection_sync, audio_path, hop_length, min_duration
+        )
         logger.info(f"Detected {len(chords)} chords in {audio_path}")
         return chords
-
-    except ImportError:
-        logger.warning("librosa not available for chord detection")
-        return []
     except Exception as e:
         logger.error(f"Chord detection failed: {e}")
         return []
@@ -129,6 +140,39 @@ def _match_chord(chroma: np.ndarray) -> str:
     return best_chord
 
 
+def _run_key_detection_sync(audio_path: Path) -> str:
+    """Synchronous key detection (CPU-intensive)."""
+    print(f"=== _run_key_detection_sync ENTERED ===", flush=True)
+    print(f"=== key: loading audio with librosa ===", flush=True)
+    y, sr = librosa.load(str(audio_path))
+    print(f"=== key: audio loaded, computing chroma ===", flush=True)
+
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+    print(f"=== key: chroma computed ===", flush=True)
+    chroma_mean = np.mean(chroma, axis=1)
+
+    major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+    minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
+    best_key = "C major"
+    best_correlation = -1
+
+    for shift in range(12):
+        shifted_chroma = np.roll(chroma_mean, -shift)
+
+        major_corr = np.corrcoef(shifted_chroma, major_profile)[0, 1]
+        if major_corr > best_correlation:
+            best_correlation = major_corr
+            best_key = f"{KEY_NAMES[shift]} major"
+
+        minor_corr = np.corrcoef(shifted_chroma, minor_profile)[0, 1]
+        if minor_corr > best_correlation:
+            best_correlation = minor_corr
+            best_key = f"{KEY_NAMES[shift]} minor"
+
+    return best_key
+
+
 async def detect_key(audio_path: Path) -> str:
     """
     Detect musical key using librosa.
@@ -142,38 +186,9 @@ async def detect_key(audio_path: Path) -> str:
     logger.info(f"Detecting key of {audio_path}")
 
     try:
-        import librosa
-
-        y, sr = librosa.load(str(audio_path))
-
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-        chroma_mean = np.mean(chroma, axis=1)
-
-        major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
-        minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
-
-        best_key = "C major"
-        best_correlation = -1
-
-        for shift in range(12):
-            shifted_chroma = np.roll(chroma_mean, -shift)
-
-            major_corr = np.corrcoef(shifted_chroma, major_profile)[0, 1]
-            if major_corr > best_correlation:
-                best_correlation = major_corr
-                best_key = f"{KEY_NAMES[shift]} major"
-
-            minor_corr = np.corrcoef(shifted_chroma, minor_profile)[0, 1]
-            if minor_corr > best_correlation:
-                best_correlation = minor_corr
-                best_key = f"{KEY_NAMES[shift]} minor"
-
+        best_key = await asyncio.to_thread(_run_key_detection_sync, audio_path)
         logger.info(f"Detected key: {best_key}")
         return best_key
-
-    except ImportError:
-        logger.warning("librosa not available for key detection")
-        return "C major"
     except Exception as e:
         logger.error(f"Key detection failed: {e}")
         return "C major"

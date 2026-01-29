@@ -1,7 +1,7 @@
 """Pydantic schemas for audio analysis output."""
 
 from enum import Enum
-from typing import Optional
+from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -19,30 +19,44 @@ class VocalRange(BaseModel):
 
 
 class VocalsAnalysis(BaseModel):
+    analysistype: Literal["vocals"] = "vocals"
     detected_range: VocalRange
 
 
 class DrumsAnalysis(BaseModel):
+    analysistype: Literal["drums"] = "drums"
     pattern_summary: str = Field(
-        ..., description="Human-readable pattern, e.g., '4-on-floor kick, snare on 2&4'"
+        ...,
+        description="Human-readable pattern, e.g., '4-on-floor kick, snare on 2&4'",
+        alias="patternsummary",
     )
+
+    model_config = {"populate_by_name": True}
 
 
 class BassAnalysis(BaseModel):
+    analysistype: Literal["bass"] = "bass"
     root_notes: list[str] = Field(..., description="Detected root notes, e.g., ['C', 'G', 'Am', 'F']")
 
 
 class OtherAnalysis(BaseModel):
+    analysistype: Literal["other"] = "other"
     instrument_guess: str = Field(
         ..., description="Guessed instruments, e.g., 'electric piano, synth pad'"
     )
+
+
+StemAnalysis = Annotated[
+    Union[VocalsAnalysis, DrumsAnalysis, BassAnalysis, OtherAnalysis],
+    Field(discriminator="analysistype"),
+]
 
 
 class StemData(BaseModel):
     role: StemRole
     audio_path: str = Field(..., description="Path to separated WAV file")
     midi_data: str = Field(..., description="Base64-encoded MIDI file")
-    analysis: Optional[VocalsAnalysis | DrumsAnalysis | BassAnalysis | OtherAnalysis] = None
+    analysis: Optional[StemAnalysis] = None
 
 
 class Metadata(BaseModel):

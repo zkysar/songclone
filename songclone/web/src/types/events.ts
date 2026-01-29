@@ -8,56 +8,107 @@ export type EventStatus = 'started' | 'complete';
 export type StepType = 'planning' | 'execution' | 'evaluation';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type CompleteReason = 'threshold_reached' | 'max_iterations' | 'cancelled';
+export type ReaperOperationType =
+  | 'create_project'
+  | 'batch_create_tracks'
+  | 'batch_insert_midi'
+  | 'batch_set_fx'
+  | 'batch_set_levels'
+  | 'render_audio';
 
-export interface PhaseEvent {
+interface BaseEvent {
+  timestamp: string;
+}
+
+export interface PhaseEvent extends BaseEvent {
   type: 'phase';
   phase: PhaseType;
   status: EventStatus;
   data?: unknown;
 }
 
-export interface IterationEvent {
+export interface IterationEvent extends BaseEvent {
   type: 'iteration';
   number: number;
   status: EventStatus;
 }
 
-export interface StepEvent {
+export interface StepEvent extends BaseEvent {
   type: 'step';
   step: StepType;
   status: EventStatus;
   data?: unknown;
 }
 
-export interface LogEvent {
+export interface LogEvent extends BaseEvent {
   type: 'log';
   level: LogLevel;
   message: string;
 }
 
-export interface AudioEvent {
+export interface AudioEvent extends BaseEvent {
   type: 'audio';
   iteration: number;
   path: string;
 }
 
-export interface HumanActionEvent {
+export interface HumanActionEvent extends BaseEvent {
   type: 'human_action_required';
   description: string;
   reason: string;
   steps: string[];
 }
 
-export interface CompleteEvent {
+export interface PausedEvent extends BaseEvent {
+  type: 'paused';
+  reason: string;
+}
+
+export interface CompleteEvent extends BaseEvent {
   type: 'complete';
   reason: CompleteReason;
   iterations: number;
 }
 
-export interface ErrorEvent {
+export interface ErrorEvent extends BaseEvent {
   type: 'error';
   message: string;
   recoverable: boolean;
+}
+
+export interface ReaperOperationEvent extends BaseEvent {
+  type: 'reaper_operation';
+  operation: ReaperOperationType;
+  status: EventStatus;
+  details?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ToolCallEvent extends BaseEvent {
+  type: 'tool_call';
+  tool: string;
+  call_id: string;
+  args?: Record<string, unknown>;
+}
+
+export interface ToolResponseEvent extends BaseEvent {
+  type: 'tool_response';
+  tool: string;
+  call_id: string;
+  status: string;
+  result?: Record<string, unknown>;
+  duration_ms?: number;
+}
+
+export interface AgentResponseEvent extends BaseEvent {
+  type: 'agent_response';
+  content: string;
+}
+
+export interface AgentThinkingEvent extends BaseEvent {
+  type: 'agent_thinking';
+  content: string;
+  agent: string;
 }
 
 export type SSEEvent =
@@ -67,8 +118,14 @@ export type SSEEvent =
   | LogEvent
   | AudioEvent
   | HumanActionEvent
+  | PausedEvent
   | CompleteEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | ReaperOperationEvent
+  | ToolCallEvent
+  | ToolResponseEvent
+  | AgentResponseEvent
+  | AgentThinkingEvent;
 
 // Type guard functions for narrowing event types
 export function isPhaseEvent(event: SSEEvent): event is PhaseEvent {
@@ -95,12 +152,36 @@ export function isHumanActionEvent(event: SSEEvent): event is HumanActionEvent {
   return event.type === 'human_action_required';
 }
 
+export function isPausedEvent(event: SSEEvent): event is PausedEvent {
+  return event.type === 'paused';
+}
+
 export function isCompleteEvent(event: SSEEvent): event is CompleteEvent {
   return event.type === 'complete';
 }
 
 export function isErrorEvent(event: SSEEvent): event is ErrorEvent {
   return event.type === 'error';
+}
+
+export function isReaperOperationEvent(event: SSEEvent): event is ReaperOperationEvent {
+  return event.type === 'reaper_operation';
+}
+
+export function isToolCallEvent(event: SSEEvent): event is ToolCallEvent {
+  return event.type === 'tool_call';
+}
+
+export function isToolResponseEvent(event: SSEEvent): event is ToolResponseEvent {
+  return event.type === 'tool_response';
+}
+
+export function isAgentResponseEvent(event: SSEEvent): event is AgentResponseEvent {
+  return event.type === 'agent_response';
+}
+
+export function isAgentThinkingEvent(event: SSEEvent): event is AgentThinkingEvent {
+  return event.type === 'agent_thinking';
 }
 
 // Session and iteration types matching API schemas

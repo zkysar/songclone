@@ -86,8 +86,14 @@ export function useSSE({
       eventSource.addEventListener('log', handleEvent);
       eventSource.addEventListener('audio', handleEvent);
       eventSource.addEventListener('human_action_required', handleEvent);
+      eventSource.addEventListener('paused', handleEvent);
       eventSource.addEventListener('complete', handleEvent);
       eventSource.addEventListener('error', handleEvent);
+      eventSource.addEventListener('reaper_operation', handleEvent);
+      eventSource.addEventListener('tool_call', handleEvent);
+      eventSource.addEventListener('tool_response', handleEvent);
+      eventSource.addEventListener('agent_response', handleEvent);
+      eventSource.addEventListener('agent_thinking', handleEvent);
     };
 
     connect();
