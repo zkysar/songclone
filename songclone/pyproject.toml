@@ -34,6 +34,7 @@ dependencies = [
     "basic-pitch>=0.3.0",
     "madmom>=0.16.1",
     "librosa>=0.10.0",
+    "essentia-tensorflow>=2.1b6.dev1034",
 
     # REAPER integration
     "python-reapy>=0.10.0",
