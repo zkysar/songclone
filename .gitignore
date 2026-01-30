@@ -80,3 +80,6 @@ videos/
 # Temporary files
 *.tmp
 *.temp
+
+# Langfuse traces
+scripts/langfuse/traces/
