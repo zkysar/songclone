@@ -66,6 +66,9 @@ sessions/
 *.mp3
 !songclone/tests/fixtures/*.wav
 
+# Video files
+videos/
+
 # MIDI files (generated)
 *.mid
 *.midi
