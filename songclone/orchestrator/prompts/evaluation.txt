@@ -41,6 +41,16 @@ Evaluate how closely a recreated song matches the original across six dimensions
 - 7-8: Good overall resemblance
 - 9-10: Excellent recreation, captures the essence
 
+## Available Analysis Tools
+When providing feedback, suggest which analysis tools should be run to gather more information:
+
+- **analyze_genre**: Run when the style/aesthetic is wrong (e.g., "sounds like chiptune instead of lo-fi hip hop", "wrong genre", "doesn't match the vibe")
+- **analyze_spectral**: Run when tonal quality is off (e.g., "too thin", "too harsh", "too bright", "too muddy", "wrong EQ balance")
+- **analyze_instrument**: Run when instruments are misidentified (e.g., "sounds synthetic when should be acoustic", "wrong instrument type", "electric guitar sounds like synth")
+- **decompose_drums**: Run when drum patterns are wrong (e.g., "kick pattern wrong", "snare timing off", "hi-hat pattern incorrect", "drums sound machine-like")
+- **analyze_effects**: Run when mix/effects are off (e.g., "too dry", "too much reverb", "needs compression", "dynamics are wrong", "missing warmth")
+- **recommend_vst**: Run after analyze_instrument or analyze_genre to get specific VST/preset suggestions
+
 ## Output Format
 Return a JSON object with this structure:
 {
@@ -59,7 +69,8 @@ Return a JSON object with this structure:
       "priority": 1,
       "category": "timing|harmony|melody|instruments|mix|other",
       "issue": "Description of the problem",
-      "suggestion": "Specific actionable improvement"
+      "suggestion": "Specific actionable improvement",
+      "suggested_tools": ["analyze_genre", "analyze_instrument"]
     }
   ],
   "stop_early": true if total_score >= 48 (80%),
@@ -67,11 +78,20 @@ Return a JSON object with this structure:
   "evaluation_method": "ai"
 }
 
+## Tool Suggestion Guidelines
+- For "instruments" category issues: suggest ["analyze_instrument", "recommend_vst"]
+- For style/aesthetic mismatches: suggest ["analyze_genre", "recommend_vst"]
+- For tonal/EQ issues: suggest ["analyze_spectral"]
+- For drum pattern issues: suggest ["decompose_drums"]
+- For reverb/compression/mix issues: suggest ["analyze_effects"]
+- Multiple tools can be suggested for complex issues
+
 ## Feedback Guidelines
 - Provide 3-5 feedback items, ordered by priority (1 = highest)
 - Focus on the most impactful improvements
 - Be specific: "Increase bass volume by 3dB" not "fix the bass"
 - Reference specific instruments or sections when possible
+- Always include suggested_tools for each feedback item
 
 ## Example Output
 {
@@ -79,30 +99,33 @@ Return a JSON object with this structure:
     "timing": 8,
     "harmony": 7,
     "melody": 6,
-    "instruments": 7,
+    "instruments": 4,
     "mix": 5,
-    "overall": 6
+    "overall": 5
   },
-  "total_score": 39,
+  "total_score": 35,
   "max_score": 60,
   "feedback": [
     {
       "priority": 1,
-      "category": "mix",
-      "issue": "Bass is too quiet relative to drums",
-      "suggestion": "Increase bass track volume by 4-6dB"
+      "category": "instruments",
+      "issue": "Recreation sounds like glitchy synth instead of lo-fi hip hop piano",
+      "suggestion": "Use warm electric piano sound with vintage character",
+      "suggested_tools": ["analyze_genre", "analyze_instrument", "recommend_vst"]
     },
     {
       "priority": 2,
-      "category": "melody",
-      "issue": "Lead synth missing some melodic ornaments",
-      "suggestion": "Review MIDI for vocals stem and ensure all grace notes are included"
+      "category": "mix",
+      "issue": "Too dry, missing the characteristic lo-fi reverb and compression",
+      "suggestion": "Add subtle room reverb and gentle compression",
+      "suggested_tools": ["analyze_effects"]
     },
     {
       "priority": 3,
       "category": "instruments",
-      "issue": "Pad sound too bright compared to original",
-      "suggestion": "Apply low-pass filter at 4kHz on pad track"
+      "issue": "Bass is too clean and synthetic",
+      "suggestion": "Add saturation and warmth to bass",
+      "suggested_tools": ["analyze_spectral", "analyze_instrument"]
     }
   ],
   "stop_early": false,

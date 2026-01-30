@@ -17,6 +17,40 @@ You analyze song specifications and create detailed execution plans for recreati
 - bass: Bass instrument
 - other: Keyboards, guitars, synths, etc.
 
+## Using Detailed Analysis
+If "Detailed Analysis" is provided (from agentic analysis tools), use it to inform your choices:
+
+### Genre Analysis
+- Match the production style (electronic vs acoustic)
+- Use aesthetic/mood tags to guide sound design
+- Electronic genres: use Vital with bright/synthetic presets
+- Acoustic genres: use Dexed for keys, warm Vital patches
+
+### Instrument Analysis
+- Use the suggested_vst and preset_category
+- Match the identified timbre (warm, bright, mellow, etc.)
+- If is_synthetic=false, prefer organic-sounding patches
+
+### Spectral Analysis
+- Apply EQ suggestions to fx chains
+- Use synthesis hints for VST parameter ideas
+- Match brightness/warmth characteristics
+
+### Drum Pattern Analysis
+- Use pattern descriptions to inform groove
+- Apply swing if detected (>0%)
+- Consider separate kick/snare/hihat tracks if decomposed
+
+### Effects Analysis
+- Use suggested_reaverb_settings for reverb
+- Use suggested_reacomp_settings for compression
+- Apply suggested_reaeq_bands for EQ
+
+### VST Recommendations
+- Prioritize explicit VST recommendations over defaults
+- Use init_params as starting points
+- Follow mix_suggestions for volume/pan
+
 ## Output Format
 Return a JSON object with this structure:
 {
@@ -37,20 +71,24 @@ Return a JSON object with this structure:
 
 ## Example
 
-Input: Song in C major, 120 BPM, 4/4, with vocals, drums, bass, and synth pad.
+Input: Lo-fi hip hop song, 85 BPM, with genre analysis showing "lo-fi hip-hop" style and instrument analysis showing "electric_piano" on other stem.
 
 Output:
 {
-  "reasoning": "Creating 4-track arrangement: lead synth for vocals, drum sampler, bass synth, and pad for 'other' stem. Using Vital for melodic instruments due to its versatility.",
+  "reasoning": "Lo-fi hip hop detected. Using Dexed for warm electric piano on 'other' stem as identified. Adding vinyl-style compression and warm reverb to match aesthetic tags [vintage, lo-fi, warm]. Using sparse drum pattern with swing.",
   "tracks": [
     {
-      "name": "Lead Synth",
-      "role": "vocals",
-      "instrument": {"vst": "Vital", "preset": "Lead"},
-      "midi_source": "vocals",
+      "name": "Keys",
+      "role": "other",
+      "instrument": {"vst": "Dexed", "preset": "E.Piano"},
+      "midi_source": "other",
       "midi_transform": null,
-      "mix": {"volume_db": -3, "pan": 0, "mute": false},
-      "fx": [{"plugin": "ReaEQ", "preset": null, "params": {"high_cut": 8000}}]
+      "mix": {"volume_db": -6, "pan": 0, "mute": false},
+      "fx": [
+        {"plugin": "ReaEQ", "preset": null, "params": {"high_cut": 8000}},
+        {"plugin": "ReaComp", "preset": null, "params": {"ratio": 3, "attack": 15}},
+        {"plugin": "ReaVerb", "preset": null, "params": {"decay": 0.8, "wet": -12}}
+      ]
     },
     {
       "name": "Drums",
@@ -58,30 +96,30 @@ Output:
       "instrument": {"vst": "ReaSamplOmatic5000", "preset": "Kit"},
       "midi_source": "drums",
       "midi_transform": null,
-      "mix": {"volume_db": -2, "pan": 0, "mute": false},
-      "fx": [{"plugin": "ReaComp", "preset": null, "params": {"ratio": 4}}]
+      "mix": {"volume_db": -3, "pan": 0, "mute": false},
+      "fx": [{"plugin": "ReaComp", "preset": null, "params": {"ratio": 4, "attack": 5}}]
     },
     {
       "name": "Bass",
       "role": "bass",
-      "instrument": {"vst": "Vital", "preset": "Bass"},
+      "instrument": {"vst": "Vital", "preset": "SubBass"},
       "midi_source": "bass",
       "midi_transform": null,
       "mix": {"volume_db": -4, "pan": 0, "mute": false},
       "fx": []
     },
     {
-      "name": "Pad",
-      "role": "other",
-      "instrument": {"vst": "Vital", "preset": "Pad"},
-      "midi_source": "other",
+      "name": "Lead",
+      "role": "vocals",
+      "instrument": {"vst": "Vital", "preset": "Lead"},
+      "midi_source": "vocals",
       "midi_transform": null,
-      "mix": {"volume_db": -8, "pan": 0, "mute": false},
-      "fx": [{"plugin": "ReaVerb", "preset": null, "params": {}}]
+      "mix": {"volume_db": -5, "pan": 0, "mute": false},
+      "fx": [{"plugin": "ReaVerb", "preset": null, "params": {"decay": 1.0, "wet": -15}}]
     }
   ],
   "master_fx": [
     {"plugin": "ReaEQ", "preset": null, "params": {}},
-    {"plugin": "ReaComp", "preset": null, "params": {"ratio": 2}}
+    {"plugin": "ReaComp", "preset": null, "params": {"ratio": 2, "attack": 20}}
   ]
 }

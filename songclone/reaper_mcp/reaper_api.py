@@ -581,17 +581,29 @@ class ReaperAPI:
 
                 # Execute render with auto-close dialog (action 42230)
                 # This renders silently without user interaction
+                logger.info(f"Starting render to {output_path}")
                 RPR.Main_OnCommand(42230, 0)
 
-                # Wait for render to complete
-                time.sleep(0.5)
+                # Wait for render to complete with polling
+                # Render time depends on project length and complexity
+                max_wait_seconds = 30
+                poll_interval = 0.5
+                waited = 0
 
-                if os.path.exists(output_path):
-                    logger.info(f"Rendered project to {output_path}")
-                    return output_path
-                else:
-                    logger.error(f"Render failed - output file not created at {output_path}")
-                    return None
+                while waited < max_wait_seconds:
+                    time.sleep(poll_interval)
+                    waited += poll_interval
+
+                    if os.path.exists(output_path):
+                        # File exists, wait a bit more to ensure it's fully written
+                        time.sleep(0.5)
+                        file_size = os.path.getsize(output_path)
+                        if file_size > 0:
+                            logger.info(f"Rendered project to {output_path} ({file_size} bytes)")
+                            return output_path
+
+                logger.error(f"Render timeout - output file not created at {output_path} after {max_wait_seconds}s")
+                return None
 
             finally:
                 # Restore original time selection

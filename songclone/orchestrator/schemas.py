@@ -68,6 +68,10 @@ class FeedbackItem(BaseModel):
     category: FeedbackCategory
     issue: str = Field(..., description="Description of the problem")
     suggestion: str = Field(..., description="Actionable improvement suggestion")
+    suggested_tools: list[str] = Field(
+        default_factory=list,
+        description="Analysis tools to run: analyze_genre, analyze_spectral, analyze_instrument, decompose_drums, analyze_effects, recommend_vst",
+    )
 
 
 class Scores(BaseModel):

@@ -22,6 +22,12 @@ from songclone.orchestrator.langfuse_config import (
     start_trace,
 )
 from songclone.orchestrator.tools import init_midi_store
+from songclone.api.session import (
+    log_assistant_response,
+    log_tool_call,
+    log_tool_response,
+    log_user_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +72,37 @@ async def create_adk_session(session_id: str, user_id: str = "user") -> None:
         session_id=session_id,
     )
     logger.info(f"ADK session created: {session_id}")
+
+
+async def cancel_adk_session(session_id: str) -> None:
+    """Cancel an ADK session and update status."""
+    from songclone.api.events import CompleteEvent, CompleteReason, LogEvent, LogLevel, event_emitter
+    from songclone.api.schemas import SessionStatus
+    from songclone.api.session import load_session, save_session
+
+    session = load_session(session_id)
+    if not session:
+        logger.warning(f"Cannot cancel: session {session_id} not found")
+        return
+
+    if session.status not in (SessionStatus.ANALYZING, SessionStatus.ITERATING):
+        return
+
+    session.status = SessionStatus.CANCELLED
+    save_session(session)
+
+    await event_emitter.emit(
+        session_id,
+        CompleteEvent(
+            reason=CompleteReason.CANCELLED,
+            iterations=session.current_iteration,
+        ),
+    )
+    await event_emitter.emit(
+        session_id,
+        LogEvent(level=LogLevel.WARN, message="Session cancelled by user"),
+    )
+    logger.info(f"ADK session {session_id} cancelled")
 
 
 async def run_orchestrator_with_adk(
@@ -166,22 +203,33 @@ async def run_orchestrator_with_adk(
 
 ## Important Notes
 - The MIDI data is stored in an internal store, NOT in this prompt
+- The song analysis is also stored - you don't need to pass song_spec_json
 - Use get_midi_summary(session_id, stem_name) to understand MIDI content
 - Use transpose_midi/quantize_midi to modify MIDI between iterations
-- Pass session_id (not song_spec_json) to execute_plan
+- When evaluation suggests tools (via suggested_tools), RUN THEM before re-planning
 
-## Full Song Spec JSON (for generate_plan tool only)
-{song_spec_json}
+## Workflow - FOLLOW EXACTLY
+For iteration N:
+1. generate_plan(session_id="{session_id}", iteration=N)
+   - This stores the plan in the session automatically
+2. execute_plan(session_id="{session_id}", output_path="{output_dir}/render_N.wav")
+   - This retrieves the plan from session - NO need to pass plan JSON!
+   - Use render_1.wav for iteration 1, render_2.wav for iteration 2, etc.
+3. evaluate_recreation(original_path="{original_audio_path}", recreation_path="{output_dir}/render_N.wav", iteration=N)
+4. If feedback includes suggested_tools, run those analysis tools
+5. If score < {quality_threshold * 100:.0f}% and N < {max_iterations}, continue to iteration N+1
 
-Begin by generating a plan using the generate_plan tool with the song_spec_json above.
-After generating the plan, execute it using session_id="{session_id}" and evaluate the result.
-Continue iterating until quality threshold is reached or max iterations exceeded.
+Begin now with iteration 1:
+generate_plan(session_id="{session_id}", iteration=1)
 """
 
     user_content = types.Content(
         role="user",
         parts=[types.Part(text=prompt)],
     )
+
+    # Log the initial prompt to conversation history
+    log_user_message(session_id, prompt, iteration=1)
 
     iteration = 0
     print(f"=== Prompt length: {len(prompt)} chars ===", flush=True)
@@ -259,13 +307,17 @@ Continue iterating until quality threshold is reached or max iterations exceeded
 
                     for tool_call in tool_calls_found:
                         tool_name = tool_call.name if hasattr(tool_call, "name") else str(tool_call)
+                        tool_args = tool_call.args if hasattr(tool_call, "args") else {}
                         yield {
                             "type": "tool_call",
                             "tool": tool_name,
-                            "args": tool_call.args if hasattr(tool_call, "args") else {},
+                            "args": tool_args,
                         }
                         logger.info(f"Tool call: {tool_name}")
                         print(f"=== TOOL CALL: {tool_name} ===", flush=True)
+
+                        # Log tool call to conversation history
+                        log_tool_call(session_id, tool_name, tool_args, iteration=iteration or 1)
 
                         # Emit human-readable log messages
                         if tool_name == "generate_plan":
@@ -327,6 +379,14 @@ Continue iterating until quality threshold is reached or max iterations exceeded
                         }
                         print(f"=== TOOL RESPONSE: {tool_name} -> {status} ===", flush=True)
 
+                        # Log tool response to conversation history
+                        log_tool_response(
+                            session_id,
+                            tool_name,
+                            response_data if response_data else {"status": status, "error": error_message},
+                            iteration=iteration or 1,
+                        )
+
                         # Emit completion messages or errors
                         if status == "success":
                             if tool_name == "generate_plan":
@@ -375,6 +435,9 @@ Continue iterating until quality threshold is reached or max iterations exceeded
                             }
                             logger.info(f"Agent final response received")
 
+                            # Log assistant response to conversation history
+                            log_assistant_response(session_id, response_text, iteration=iteration or 1)
+
                             # Check if we need to continue (agent will indicate in response)
                             if "continue" in response_text.lower() and iteration < max_iterations:
                                 iteration += 1
@@ -383,10 +446,15 @@ Continue iterating until quality threshold is reached or max iterations exceeded
                                     "number": iteration,
                                     "status": "started",
                                 }
+                                continue_message = "Continue with the next iteration based on the evaluation feedback."
                                 continue_content = types.Content(
                                     role="user",
-                                    parts=[types.Part(text="Continue with the next iteration based on the evaluation feedback.")],
+                                    parts=[types.Part(text=continue_message)],
                                 )
+
+                                # Log continuation message
+                                log_user_message(session_id, continue_message, iteration=iteration)
+
                                 cont_stream = runner.run_async(
                                     user_id=user_id,
                                     session_id=session_id,
@@ -396,10 +464,13 @@ Continue iterating until quality threshold is reached or max iterations exceeded
                                     async for cont_event in cont_stream:
                                         if cont_event.is_final_response():
                                             if cont_event.content and cont_event.content.parts:
+                                                cont_response = cont_event.content.parts[0].text
                                                 yield {
                                                     "type": "agent_response",
-                                                    "content": cont_event.content.parts[0].text,
+                                                    "content": cont_response,
                                                 }
+                                                # Log continuation response
+                                                log_assistant_response(session_id, cont_response, iteration=iteration)
                                             break
                                 finally:
                                     await cont_stream.aclose()
@@ -445,6 +516,9 @@ async def send_message_to_agent(
         parts=[types.Part(text=message)],
     )
 
+    # Log the user message to conversation history
+    log_user_message(session_id, message)
+
     with start_trace(name="songclone-message", session_id=session_id):
         trace_url = print_trace_link(f"message:{session_id}")
         if trace_url:
@@ -475,11 +549,14 @@ async def send_message_to_agent(
 
                     for tool_call in tool_calls_found:
                         tool_name = tool_call.name if hasattr(tool_call, "name") else str(tool_call)
+                        tool_args = tool_call.args if hasattr(tool_call, "args") else {}
                         yield {
                             "type": "tool_call",
                             "tool": tool_name,
-                            "args": tool_call.args if hasattr(tool_call, "args") else {},
+                            "args": tool_args,
                         }
+                        # Log tool call to conversation history
+                        log_tool_call(session_id, tool_name, tool_args)
 
                     # Check for tool responses
                     tool_responses_found = []
@@ -518,6 +595,13 @@ async def send_message_to_agent(
                             "status": status,
                         }
 
+                        # Log tool response to conversation history
+                        log_tool_response(
+                            session_id,
+                            tool_name,
+                            response_data if response_data else {"status": status, "error": error_message},
+                        )
+
                         # Check for REAPER connection failure
                         if status == "error" and error_message and "REAPER connection failed" in error_message:
                             yield {
@@ -540,10 +624,13 @@ async def send_message_to_agent(
 
                     if event.is_final_response():
                         if event.content and event.content.parts:
+                            response_text = event.content.parts[0].text
                             yield {
                                 "type": "agent_response",
-                                "content": event.content.parts[0].text,
+                                "content": response_text,
                             }
+                            # Log assistant response to conversation history
+                            log_assistant_response(session_id, response_text)
                         break
             finally:
                 await event_stream.aclose()

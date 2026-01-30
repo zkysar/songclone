@@ -5,9 +5,14 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from songclone.api.schemas import Session, SessionStatus
+from songclone.api.schemas import (
+    ConversationMessage,
+    ConversationRole,
+    Session,
+    SessionStatus,
+)
 
 SESSIONS_DIR = Path("sessions")
 
@@ -109,3 +114,82 @@ def list_sessions() -> list[str]:
         d.name for d in SESSIONS_DIR.iterdir()
         if d.is_dir() and (d / "session.json").exists()
     ]
+
+
+def append_conversation_message(
+    session_id: str,
+    role: ConversationRole,
+    content: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    tool_args: Optional[dict[str, Any]] = None,
+    tool_result: Optional[Any] = None,
+    iteration: Optional[int] = None,
+) -> None:
+    """Append a message to the session's conversation history."""
+    session = load_session(session_id)
+    if not session:
+        return
+
+    message = ConversationMessage(
+        role=role,
+        timestamp=datetime.utcnow(),
+        content=content,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        tool_result=tool_result,
+        iteration=iteration,
+    )
+    session.conversation_history.append(message)
+    save_session(session)
+
+
+def log_user_message(session_id: str, content: str, iteration: Optional[int] = None) -> None:
+    """Log a user message sent to the LLM."""
+    append_conversation_message(
+        session_id,
+        role=ConversationRole.USER,
+        content=content,
+        iteration=iteration,
+    )
+
+
+def log_assistant_response(session_id: str, content: str, iteration: Optional[int] = None) -> None:
+    """Log an assistant response from the LLM."""
+    append_conversation_message(
+        session_id,
+        role=ConversationRole.ASSISTANT,
+        content=content,
+        iteration=iteration,
+    )
+
+
+def log_tool_call(
+    session_id: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    iteration: Optional[int] = None,
+) -> None:
+    """Log a tool call made by the LLM."""
+    append_conversation_message(
+        session_id,
+        role=ConversationRole.TOOL_CALL,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        iteration=iteration,
+    )
+
+
+def log_tool_response(
+    session_id: str,
+    tool_name: str,
+    tool_result: Any,
+    iteration: Optional[int] = None,
+) -> None:
+    """Log a tool response returned to the LLM."""
+    append_conversation_message(
+        session_id,
+        role=ConversationRole.TOOL_RESPONSE,
+        tool_name=tool_name,
+        tool_result=tool_result,
+        iteration=iteration,
+    )

@@ -34,6 +34,43 @@ _midi_store: dict[str, dict[str, str]] = {}
 # Store song_spec per session for execute_plan to access
 _song_spec_store: dict[str, SongSpec] = {}
 
+# Store the latest plan per session - avoids LLM needing to pass JSON between tools
+# Structure: session_id -> ExecutionPlan
+_plan_store: dict[str, ExecutionPlan] = {}
+
+# Analysis cache (per session) - stores results from agentic analysis tools
+# Structure: session_id -> {analysis_type -> result_dict}
+_analysis_cache: dict[str, dict[str, Any]] = {}
+
+
+def get_cached_analysis(session_id: str, analysis_type: str) -> dict | None:
+    """Get cached analysis result.
+
+    Args:
+        session_id: Current session ID.
+        analysis_type: Type of analysis (genre, spectral, instrument, drums, effects, vst).
+
+    Returns:
+        Cached analysis result dict, or None if not cached.
+    """
+    if session_id in _analysis_cache:
+        return _analysis_cache[session_id].get(analysis_type)
+    return None
+
+
+def cache_analysis(session_id: str, analysis_type: str, result: dict) -> None:
+    """Cache analysis result for use in planning.
+
+    Args:
+        session_id: Current session ID.
+        analysis_type: Type of analysis (genre, spectral, instrument, drums, effects, vst).
+        result: Analysis result dict to cache.
+    """
+    if session_id not in _analysis_cache:
+        _analysis_cache[session_id] = {}
+    _analysis_cache[session_id][analysis_type] = result
+    logger.info(f"Cached {analysis_type} analysis for session {session_id}")
+
 PLANNING_PROMPT_PATH = Path(__file__).parent / "prompts" / "planning.txt"
 EVALUATION_PROMPT_PATH = Path(__file__).parent / "prompts" / "evaluation.txt"
 
@@ -313,7 +350,7 @@ def get_midi_summary(session_id: str, stem_name: str) -> dict[str, Any]:
 
 
 def generate_plan(
-    song_spec_json: str,
+    session_id: str,
     previous_feedback: str | None = None,
     iteration: int = 1,
 ) -> dict[str, Any]:
@@ -322,8 +359,11 @@ def generate_plan(
     Use this tool to create a detailed plan for how to set up tracks,
     instruments, and effects to recreate the analyzed song.
 
+    IMPORTANT: The song analysis is automatically retrieved from the session.
+    You do NOT need to pass the song_spec_json - just pass the session_id.
+
     Args:
-        song_spec_json: JSON string containing the song analysis (tempo, key, stems, structure).
+        session_id: Session ID to retrieve song analysis from.
         previous_feedback: Optional JSON string with feedback from previous iteration evaluation.
         iteration: Current iteration number (1 = first attempt).
 
@@ -331,15 +371,18 @@ def generate_plan(
         dict: Contains 'status' ('success' or 'error') and either 'plan' with
               the ExecutionPlan JSON or 'error_message' with details.
     """
-    print(f"=== GENERATE_PLAN CALLED: iteration={iteration} ===", flush=True)
-    try:
-        song_spec = SongSpec.model_validate_json(song_spec_json)
-        print(f"=== Song spec validated: {song_spec.metadata.tempo_bpm} BPM ===", flush=True)
-    except Exception as e:
-        print(f"=== GENERATE_PLAN ERROR: Invalid song_spec_json: {e} ===", flush=True)
-        return {"status": "error", "error_message": f"Invalid song_spec_json: {e}"}
+    print(f"=== GENERATE_PLAN CALLED: session_id={session_id}, iteration={iteration} ===", flush=True)
 
-    user_message = _build_planning_message(song_spec, previous_feedback, iteration)
+    # Retrieve song_spec from session store - LLM doesn't need to pass it
+    if session_id not in _song_spec_store:
+        print(f"=== GENERATE_PLAN ERROR: Session {session_id} not found ===", flush=True)
+        return {"status": "error", "error_message": f"Session {session_id} not found. Initialize with init_midi_store first."}
+
+    song_spec = _song_spec_store[session_id]
+    print(f"=== Song spec retrieved: {song_spec.metadata.tempo_bpm} BPM ===", flush=True)
+
+    user_message = _build_planning_message(song_spec, previous_feedback, iteration, session_id)
+    print(f"=== Planning message length: {len(user_message)} chars ===", flush=True)
 
     try:
         from google import genai
@@ -364,27 +407,69 @@ def generate_plan(
         plan = ExecutionPlan.model_validate(plan_data)
         print(f"=== Plan validated: {len(plan.tracks)} tracks, reasoning: {plan.reasoning[:100]}... ===", flush=True)
 
+        # Store the plan in session so execute_plan can retrieve it
+        _plan_store[session_id] = plan
+        print(f"=== Plan stored in session {session_id} ===", flush=True)
+
         return {
             "status": "success",
-            "plan": plan.model_dump(),
+            "plan_stored": True,
             "track_count": len(plan.tracks),
             "reasoning": plan.reasoning,
+            "tracks": [{"name": t.name, "role": t.role.value, "vst": t.instrument.vst} for t in plan.tracks],
         }
 
     except Exception as e:
         logger.warning(f"AI planning failed: {e}, using fallback")
         plan = _generate_fallback_plan(song_spec)
+
+        # Store fallback plan in session too
+        _plan_store[session_id] = plan
+        print(f"=== Fallback plan stored in session {session_id} ===", flush=True)
+
         return {
             "status": "success",
-            "plan": plan.model_dump(),
+            "plan_stored": True,
             "track_count": len(plan.tracks),
             "reasoning": plan.reasoning,
+            "tracks": [{"name": t.name, "role": t.role.value, "vst": t.instrument.vst} for t in plan.tracks],
             "fallback": True,
         }
 
 
+def _repair_json(json_str: str) -> str:
+    """Attempt to repair common JSON errors from LLM output."""
+    import re
+
+    repaired = json_str.strip()
+
+    # Remove markdown code blocks if present
+    if repaired.startswith("```"):
+        lines = repaired.split("\n")
+        # Find start and end of code block
+        start_idx = 1 if lines[0].startswith("```") else 0
+        end_idx = len(lines)
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip() == "```":
+                end_idx = i
+                break
+        repaired = "\n".join(lines[start_idx:end_idx])
+
+    # Replace single quotes with double quotes (common LLM error)
+    # But be careful not to replace quotes inside strings
+    # Simple approach: replace 'key': with "key":
+    repaired = re.sub(r"'([^']+)'(\s*:)", r'"\1"\2', repaired)
+
+    # Fix trailing commas before closing braces/brackets
+    repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+
+    # Fix missing quotes around property names
+    repaired = re.sub(r"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", r'\1"\2":', repaired)
+
+    return repaired
+
+
 def execute_plan(
-    plan_json: str,
     session_id: str,
     output_path: str,
 ) -> dict[str, Any]:
@@ -393,13 +478,11 @@ def execute_plan(
     Use this tool after generating a plan to actually create the tracks,
     load instruments, insert MIDI, and render the audio.
 
-    IMPORTANT: The session_id is used to retrieve MIDI data from the MIDI store.
-    If you've used transpose_midi or quantize_midi, those modifications will be
-    applied when this tool reads the MIDI.
+    IMPORTANT: The plan is automatically retrieved from the session (set by generate_plan).
+    You do NOT need to pass the plan JSON - just call execute_plan after generate_plan.
 
     Args:
-        plan_json: JSON string containing the ExecutionPlan.
-        session_id: Session ID to retrieve MIDI data from the store.
+        session_id: Session ID to retrieve the plan and MIDI data from.
         output_path: File path where the rendered audio should be saved.
 
     Returns:
@@ -412,14 +495,12 @@ def execute_plan(
     if session_id not in _song_spec_store:
         return {"status": "error", "error_message": f"Session {session_id} not found. MIDI store not initialized."}
 
-    song_spec = _song_spec_store[session_id]
+    if session_id not in _plan_store:
+        return {"status": "error", "error_message": f"No plan found for session {session_id}. Call generate_plan first."}
 
-    try:
-        plan = ExecutionPlan.model_validate_json(plan_json)
-        print(f"=== Plan validated: {len(plan.tracks)} tracks ===", flush=True)
-    except Exception as e:
-        print(f"=== EXECUTE_PLAN ERROR: Invalid JSON: {e} ===", flush=True)
-        return {"status": "error", "error_message": f"Invalid JSON input: {e}"}
+    song_spec = _song_spec_store[session_id]
+    plan = _plan_store[session_id]
+    print(f"=== Retrieved plan from session: {len(plan.tracks)} tracks ===", flush=True)
 
     try:
         return _execute_plan_sync(plan, song_spec, output_path, session_id)
@@ -659,6 +740,7 @@ def _build_planning_message(
     song_spec: SongSpec,
     previous_feedback: str | None,
     iteration: int,
+    session_id: str | None = None,
 ) -> str:
     parts = [
         f"## Song Analysis (Iteration {iteration})",
@@ -677,10 +759,107 @@ def _build_planning_message(
     for section in song_spec.structure.sections:
         parts.append(f"- {section.name}: {section.start:.1f}s - {section.end:.1f}s")
 
+    if session_id:
+        cached_analysis = _get_all_cached_analysis(session_id)
+        if cached_analysis:
+            parts.extend(["", "## Detailed Analysis (from agentic tools)"])
+            parts.append(cached_analysis)
+
     if previous_feedback:
         parts.extend(["", "## Previous Iteration Feedback", previous_feedback])
 
     parts.extend(["", "Generate an ExecutionPlan JSON to recreate this song."])
+    return "\n".join(parts)
+
+
+def _get_all_cached_analysis(session_id: str) -> str:
+    """Format all cached analysis for planning prompt."""
+    if session_id not in _analysis_cache:
+        return ""
+
+    cache = _analysis_cache[session_id]
+    parts = []
+
+    if "genre" in cache:
+        g = cache["genre"]
+        parts.append(f"### Genre Analysis")
+        parts.append(f"- Primary Genre: {g.get('primary_genre', 'unknown')}")
+        parts.append(f"- Subgenre: {g.get('subgenre', '')}")
+        parts.append(f"- Aesthetic Tags: {', '.join(g.get('aesthetic_tags', []))}")
+        parts.append(f"- Mood Tags: {', '.join(g.get('mood_tags', []))}")
+        ps = g.get("production_style", {})
+        if ps:
+            parts.append(f"- Production: {'electronic' if ps.get('is_electronic') else 'acoustic'}, {ps.get('density', 'medium')} density, {ps.get('dynamics', 'moderate')} dynamics")
+        parts.append("")
+
+    for stem in ["vocals", "drums", "bass", "other"]:
+        inst_key = f"instrument_{stem}"
+        if inst_key in cache:
+            inst = cache[inst_key]
+            parts.append(f"### {stem.capitalize()} Instrument Analysis")
+            parts.append(f"- Identified as: {inst.get('primary_instrument', 'unknown')} (confidence: {inst.get('confidence', 0):.0%})")
+            parts.append(f"- Timbre: {', '.join(inst.get('timbre_descriptors', []))}")
+            parts.append(f"- Synthetic: {inst.get('is_synthetic', False)}")
+            parts.append(f"- Suggested VST: {inst.get('suggested_vst', 'Vital')} ({inst.get('suggested_preset_category', 'init')})")
+            parts.append("")
+
+        spec_key = f"spectral_{stem}"
+        if spec_key in cache:
+            spec = cache[spec_key]
+            parts.append(f"### {stem.capitalize()} Spectral Analysis")
+            parts.append(f"- Brightness: {spec.get('brightness_category', 'neutral')}")
+            parts.append(f"- Warmth: {spec.get('warmth_category', 'neutral')}")
+            parts.append(f"- Attack: {spec.get('attack_time_ms', 50):.0f}ms, Decay: {spec.get('decay_character', 'sustained')}")
+            if spec.get("eq_suggestions"):
+                parts.append(f"- EQ Suggestions: {'; '.join(spec['eq_suggestions'][:2])}")
+            if spec.get("synthesis_hints"):
+                parts.append(f"- Synthesis Hints: {'; '.join(spec['synthesis_hints'][:2])}")
+            parts.append("")
+
+    if "drums" in cache:
+        d = cache["drums"]
+        parts.append(f"### Drum Pattern Analysis")
+        parts.append(f"- Overall Pattern: {d.get('overall_pattern', 'unknown')}")
+        parts.append(f"- Groove: {d.get('groove_feel', 'straight')}, swing: {d.get('swing_amount', 0):.0f}%")
+        kick = d.get("kick", {})
+        snare = d.get("snare", {})
+        hihat = d.get("hihat", {})
+        parts.append(f"- Kick: {kick.get('pattern', 'unknown')} ({kick.get('density_per_bar', 0):.1f}/bar)")
+        parts.append(f"- Snare: {snare.get('pattern', 'unknown')} ({snare.get('density_per_bar', 0):.1f}/bar)")
+        parts.append(f"- Hi-hat: {hihat.get('pattern', 'unknown')} ({hihat.get('density_per_bar', 0):.1f}/bar)")
+        parts.append("")
+
+    if "effects" in cache:
+        e = cache["effects"]
+        parts.append(f"### Effects Analysis")
+        rev = e.get("reverb", {})
+        comp = e.get("compression", {})
+        eq = e.get("eq_profile", {})
+        parts.append(f"- Reverb: RT60 ~{rev.get('estimated_rt60', 0.5):.1f}s, {rev.get('room_size', 'medium')} room")
+        parts.append(f"- Compression: {comp.get('compression_amount', 'moderate')}, ratio ~{comp.get('estimated_ratio', 4):.0f}:1")
+        parts.append(f"- EQ Balance: {eq.get('balance', 'balanced')}")
+        if rev.get("suggested_reaverb_settings"):
+            s = rev["suggested_reaverb_settings"]
+            parts.append(f"- ReaVerb: decay={s.get('decay', 1.0)}, wet={s.get('wet', -15)}dB")
+        if comp.get("suggested_reacomp_settings"):
+            s = comp["suggested_reacomp_settings"]
+            parts.append(f"- ReaComp: ratio={s.get('ratio', 4)}, attack={s.get('attack', 10)}ms, threshold={s.get('threshold', -18)}dB")
+        parts.append("")
+
+    for stem in ["vocals", "drums", "bass", "other"]:
+        vst_key = f"vst_{stem}"
+        if vst_key in cache:
+            v = cache[vst_key]
+            primary = v.get("primary_vst", {})
+            parts.append(f"### {stem.capitalize()} VST Recommendation")
+            parts.append(f"- Use: {primary.get('name', 'Vital')} ({primary.get('preset_category', 'init')})")
+            if primary.get("init_params"):
+                params = ", ".join(f"{k}={v}" for k, v in list(primary["init_params"].items())[:3])
+                parts.append(f"- Init Params: {params}")
+            mix = v.get("mix_suggestions", {})
+            parts.append(f"- Mix: {mix.get('volume_db', -6):.1f}dB, pan={mix.get('pan', 0):.1f}")
+            parts.append("")
+
     return "\n".join(parts)
 
 
@@ -796,3 +975,226 @@ def _mfcc_fallback_evaluation(original_path: str, recreation_path: str) -> Evalu
         stop_reason="Quality threshold reached" if total_score >= 48 else None,
         evaluation_method=EvaluationMethod.MFCC_FALLBACK,
     )
+
+
+# =============================================================================
+# AGENTIC ANALYSIS TOOLS
+# =============================================================================
+
+
+def analyze_genre(session_id: str, audio_path: str) -> dict[str, Any]:
+    """Analyze genre and aesthetic style of the original audio.
+
+    Call this when evaluation feedback indicates style/aesthetic mismatch
+    (e.g., "wrong genre", "doesn't match the vibe", "sounds like chiptune
+    instead of lo-fi hip hop").
+
+    Results are cached in the session for use in subsequent planning.
+
+    Args:
+        session_id: Current session ID.
+        audio_path: Path to the original audio file (WAV).
+
+    Returns:
+        dict with status, primary_genre, subgenre, aesthetic_tags, mood_tags,
+        production_style (is_acoustic, is_electronic, density, dynamics).
+    """
+    print(f"=== ANALYZE_GENRE CALLED: session={session_id} ===", flush=True)
+
+    from songclone.analysis.genre_detector import analyze_genre as _analyze_genre
+
+    result = _analyze_genre(audio_path)
+
+    if result.get("status") == "success":
+        cache_analysis(session_id, "genre", result)
+
+    print(f"=== ANALYZE_GENRE COMPLETE: {result.get('primary_genre', 'unknown')} ===", flush=True)
+    return result
+
+
+def analyze_spectral(session_id: str, stem_name: str) -> dict[str, Any]:
+    """Analyze spectral/timbral characteristics of a stem.
+
+    Call this when evaluation indicates tonal issues with a specific stem
+    (e.g., "too thin", "too harsh", "too bright", "needs EQ").
+
+    Provides actionable EQ suggestions and synthesis hints.
+    Results are cached for use in planning.
+
+    Args:
+        session_id: Current session ID.
+        stem_name: Stem to analyze (vocals, drums, bass, other).
+
+    Returns:
+        dict with status, brightness_category, warmth_category,
+        spectral_centroid_hz, harmonic_ratio, attack_time_ms, decay_character,
+        eq_suggestions, synthesis_hints.
+    """
+    print(f"=== ANALYZE_SPECTRAL CALLED: session={session_id}, stem={stem_name} ===", flush=True)
+
+    if session_id not in _song_spec_store:
+        return {"status": "error", "error_message": f"Session {session_id} not found"}
+
+    song_spec = _song_spec_store[session_id]
+    if stem_name not in song_spec.stems:
+        return {"status": "error", "error_message": f"Stem '{stem_name}' not found in session"}
+
+    audio_path = song_spec.stems[stem_name].audio_path
+
+    from songclone.analysis.spectral_extractor import analyze_spectral as _analyze_spectral
+
+    result = _analyze_spectral(audio_path, stem_name)
+
+    if result.get("status") == "success":
+        cache_analysis(session_id, f"spectral_{stem_name}", result)
+
+    print(f"=== ANALYZE_SPECTRAL COMPLETE: {result.get('brightness_category', 'unknown')} ===", flush=True)
+    return result
+
+
+def analyze_instrument(session_id: str, stem_name: str) -> dict[str, Any]:
+    """Identify the instrument type in a stem.
+
+    Call this when evaluation indicates instrument type mismatch
+    (e.g., "wrong instrument", "sounds synthetic when should be acoustic",
+    "electric guitar sounds like synth").
+
+    Helps the planner choose the correct VST and preset.
+    Results are cached for use in planning and recommend_vst.
+
+    Args:
+        session_id: Current session ID.
+        stem_name: Stem to analyze (vocals, drums, bass, other).
+
+    Returns:
+        dict with status, primary_instrument, confidence, secondary_instruments,
+        timbre_descriptors, is_synthetic, suggested_vst, suggested_preset_category.
+    """
+    print(f"=== ANALYZE_INSTRUMENT CALLED: session={session_id}, stem={stem_name} ===", flush=True)
+
+    if session_id not in _song_spec_store:
+        return {"status": "error", "error_message": f"Session {session_id} not found"}
+
+    song_spec = _song_spec_store[session_id]
+    if stem_name not in song_spec.stems:
+        return {"status": "error", "error_message": f"Stem '{stem_name}' not found in session"}
+
+    audio_path = song_spec.stems[stem_name].audio_path
+
+    from songclone.analysis.instrument_classifier import analyze_instrument as _analyze_instrument
+
+    result = _analyze_instrument(audio_path, stem_name)
+
+    if result.get("status") == "success":
+        cache_analysis(session_id, f"instrument_{stem_name}", result)
+
+    print(f"=== ANALYZE_INSTRUMENT COMPLETE: {result.get('primary_instrument', 'unknown')} ===", flush=True)
+    return result
+
+
+def decompose_drums(session_id: str) -> dict[str, Any]:
+    """Decompose drum stem into kick/snare/hihat patterns.
+
+    Call this when evaluation indicates drum issues (e.g., "drums sound wrong",
+    "kick/snare timing off", "hat pattern incorrect").
+
+    Replaces the monophonic drum MIDI with separate patterns for each drum element.
+    The new MIDI data is stored in the session for the next execution.
+
+    Args:
+        session_id: Current session ID.
+
+    Returns:
+        dict with status, kick, snare, hihat patterns (hit_count, density_per_bar, pattern),
+        overall_pattern, groove_feel, swing_amount, midi_updated flag.
+    """
+    print(f"=== DECOMPOSE_DRUMS CALLED: session={session_id} ===", flush=True)
+
+    if session_id not in _song_spec_store:
+        return {"status": "error", "error_message": f"Session {session_id} not found"}
+
+    song_spec = _song_spec_store[session_id]
+    if "drums" not in song_spec.stems:
+        return {"status": "error", "error_message": "Drums stem not found in session"}
+
+    audio_path = song_spec.stems["drums"].audio_path
+
+    from songclone.analysis.drum_decomposer import decompose_drums as _decompose_drums
+
+    result = _decompose_drums(audio_path, session_id)
+
+    if result.get("status") == "success":
+        cache_analysis(session_id, "drums", result)
+
+    print(f"=== DECOMPOSE_DRUMS COMPLETE: {result.get('overall_pattern', 'unknown')} ===", flush=True)
+    return result
+
+
+def analyze_effects(session_id: str) -> dict[str, Any]:
+    """Analyze reverb, compression, and EQ characteristics of the original.
+
+    Call this when evaluation indicates mix/effects issues (e.g., "too dry",
+    "wrong reverb", "needs compression", "mix balance off").
+
+    Provides specific parameter suggestions for ReaVerb, ReaComp, ReaEQ.
+
+    Args:
+        session_id: Current session ID.
+
+    Returns:
+        dict with status, reverb (RT60, room_size, wet_dry, suggested_reaverb_settings),
+        compression (dynamic_range_db, crest_factor, estimated_ratio, suggested_reacomp_settings),
+        eq_profile (spectral_centroid_hz, bass_energy_db, suggested_reaeq_bands).
+    """
+    print(f"=== ANALYZE_EFFECTS CALLED: session={session_id} ===", flush=True)
+
+    if session_id not in _song_spec_store:
+        return {"status": "error", "error_message": f"Session {session_id} not found"}
+
+    song_spec = _song_spec_store[session_id]
+
+    original_path = None
+    for stem_name in ["other", "vocals", "bass"]:
+        if stem_name in song_spec.stems:
+            original_path = song_spec.stems[stem_name].audio_path
+            break
+
+    if not original_path:
+        return {"status": "error", "error_message": "No suitable stem found for effects analysis"}
+
+    from songclone.analysis.effects_analyzer import analyze_effects as _analyze_effects
+
+    result = _analyze_effects(original_path)
+
+    if result.get("status") == "success":
+        cache_analysis(session_id, "effects", result)
+
+    print(f"=== ANALYZE_EFFECTS COMPLETE ===", flush=True)
+    return result
+
+
+def recommend_vst(session_id: str, stem_name: str) -> dict[str, Any]:
+    """Recommend VST and settings based on cached analysis.
+
+    Call this after analyze_genre and/or analyze_instrument to get
+    specific VST recommendations. Uses cached analysis results.
+
+    Args:
+        session_id: Current session ID.
+        stem_name: Stem to get recommendations for (vocals, drums, bass, other).
+
+    Returns:
+        dict with status, primary_vst (name, preset_category, init_params),
+        fallback_vst, effects_chain, mix_suggestions, reasoning.
+    """
+    print(f"=== RECOMMEND_VST CALLED: session={session_id}, stem={stem_name} ===", flush=True)
+
+    from songclone.analysis.vst_recommender import recommend_vst as _recommend_vst
+
+    result = _recommend_vst(session_id, stem_name)
+
+    if result.get("status") == "success":
+        cache_analysis(session_id, f"vst_{stem_name}", result)
+
+    print(f"=== RECOMMEND_VST COMPLETE: {result.get('primary_vst', {}).get('name', 'unknown')} ===", flush=True)
+    return result

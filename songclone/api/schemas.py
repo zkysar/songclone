@@ -28,6 +28,23 @@ class IterationStatus(str, Enum):
     FAILED = "failed"
 
 
+class ConversationRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL_CALL = "tool_call"
+    TOOL_RESPONSE = "tool_response"
+
+
+class ConversationMessage(BaseModel):
+    role: ConversationRole
+    timestamp: datetime
+    content: Optional[str] = None
+    tool_name: Optional[str] = None
+    tool_args: Optional[dict[str, Any]] = None
+    tool_result: Optional[Any] = None
+    iteration: Optional[int] = None
+
+
 class Iteration(BaseModel):
     number: int = Field(..., ge=1, description="Iteration number (1-indexed)")
     plan: ExecutionPlan
@@ -52,6 +69,7 @@ class Session(BaseModel):
     updated_at: datetime
     error: Optional[str] = None
     pause_context: Optional[dict[str, Any]] = None
+    conversation_history: list[ConversationMessage] = Field(default_factory=list)
 
 
 class SessionCreated(BaseModel):

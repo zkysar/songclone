@@ -38,8 +38,8 @@ from songclone.api.session import (
     session_exists,
 )
 from songclone.analysis.pipeline import analyze_song
-from songclone.orchestrator.main import run_recreation_loop, cancel_session as cancel_recreation
 from songclone.orchestrator.adk_runner import (
+    cancel_adk_session,
     create_adk_session,
     run_orchestrator_with_adk,
     send_message_to_agent,
@@ -65,7 +65,6 @@ async def create_new_session(
     max_iterations: int = Form(10),
     min_iterations: int = Form(5),
     quality_threshold: float = Form(0.8),
-    use_adk: bool = Form(True),
 ) -> SessionCreated:
     """
     Create a new recreation session.
@@ -128,7 +127,6 @@ async def create_new_session(
         run_analysis(
             session.id,
             audio_path,
-            use_adk,
             max_iterations,
             quality_threshold,
         )
@@ -145,11 +143,10 @@ async def create_new_session(
 async def run_analysis(
     session_id: str,
     audio_path: Path,
-    use_adk: bool = True,
     max_iterations: int = 10,
     quality_threshold: float = 0.8,
 ) -> None:
-    """Background task to run analysis pipeline and auto-start recreation."""
+    """Background task to run analysis pipeline and start ADK orchestration."""
     print(f"=== RUN_ANALYSIS STARTED for {session_id} ===", flush=True)
     logger.info(f"run_analysis started for session {session_id}")
 
@@ -179,97 +176,87 @@ async def run_analysis(
             save_session(session)
             print(f"=== Session saved with song_spec ===", flush=True)
 
-            if use_adk:
-                # Use ADK Runner for orchestration
-                print(f"=== Starting ADK orchestration ===", flush=True)
-                logger.info(f"Starting ADK orchestration for session {session_id}")
-                await create_adk_session(session_id)
-                print(f"=== ADK session created ===", flush=True)
+            # Start ADK orchestration
+            print(f"=== Starting ADK orchestration ===", flush=True)
+            logger.info(f"Starting ADK orchestration for session {session_id}")
+            await create_adk_session(session_id)
+            print(f"=== ADK session created ===", flush=True)
 
-                render_dir = audio_path.parent / "renders"
-                render_dir.mkdir(exist_ok=True)
-                print(f"=== Calling run_orchestrator_with_adk ===", flush=True)
+            render_dir = audio_path.parent / "renders"
+            render_dir.mkdir(exist_ok=True)
+            print(f"=== Calling run_orchestrator_with_adk ===", flush=True)
 
-                async for event in run_orchestrator_with_adk(
-                    session_id=session_id,
-                    song_spec_json=song_spec.model_dump_json(),
-                    original_audio_path=str(audio_path),
-                    output_dir=str(render_dir),
-                    max_iterations=max_iterations,
-                    quality_threshold=quality_threshold,
-                ):
-                    # Forward ADK events to SSE
-                    event_type = event.get("type")
-                    if event_type == "tool_call":
-                        await event_emitter.emit(
-                            session_id,
-                            ToolCallEvent(tool=event.get("tool", ""), args=event.get("args")),
-                        )
-                    elif event_type == "tool_response":
-                        await event_emitter.emit(
-                            session_id,
-                            ToolResponseEvent(
-                                tool=event.get("tool", ""),
-                                call_id=event.get("call_id", "unknown"),
-                                status=event.get("status", ""),
-                            ),
-                        )
-                    elif event_type == "agent_response":
-                        await event_emitter.emit(
-                            session_id,
-                            AgentResponseEvent(content=event.get("content", "")),
-                        )
-                    elif event_type == "error":
-                        await event_emitter.emit(
-                            session_id,
-                            LogEvent(level=LogLevel.ERROR, message=event.get("message", "")),
-                        )
-                    elif event_type == "log":
-                        # Respect level field if provided, default to INFO
-                        level_str = event.get("level", "info")
-                        level = LogLevel.ERROR if level_str == "error" else (
-                            LogLevel.WARN if level_str == "warn" else LogLevel.INFO
-                        )
-                        await event_emitter.emit(
-                            session_id,
-                            LogEvent(level=level, message=event.get("message", "")),
-                        )
-                    elif event_type == "trace_url":
-                        await event_emitter.emit(
-                            session_id,
-                            TraceUrlEvent(url=event.get("url", "")),
-                        )
-                    elif event_type == "human_action_required":
-                        await event_emitter.emit(
-                            session_id,
-                            HumanActionEvent(
-                                description=event.get("description", "Action required"),
-                                reason=event.get("reason", ""),
-                                steps=event.get("steps", []),
-                            ),
-                        )
-                    elif event_type == "paused":
-                        # Save pause state so /resume knows to use ADK
-                        session = load_session(session_id)
-                        if session:
-                            session.status = SessionStatus.PAUSED
-                            session.pause_context = {
-                                "use_adk": True,
-                                "reason": event.get("reason", ""),
-                            }
-                            save_session(session)
-                        await event_emitter.emit(
-                            session_id,
-                            PausedEvent(reason=event.get("reason", "")),
-                        )
-                        # Exit since generator stopped
-                        logger.info(f"Session {session_id} paused: {event.get('reason')}")
-                        return
+            async for event in run_orchestrator_with_adk(
+                session_id=session_id,
+                song_spec_json=song_spec.model_dump_json(),
+                original_audio_path=str(audio_path),
+                output_dir=str(render_dir),
+                max_iterations=max_iterations,
+                quality_threshold=quality_threshold,
+            ):
+                # Forward ADK events to SSE
+                event_type = event.get("type")
+                if event_type == "tool_call":
+                    await event_emitter.emit(
+                        session_id,
+                        ToolCallEvent(tool=event.get("tool", ""), args=event.get("args")),
+                    )
+                elif event_type == "tool_response":
+                    await event_emitter.emit(
+                        session_id,
+                        ToolResponseEvent(
+                            tool=event.get("tool", ""),
+                            call_id=event.get("call_id", "unknown"),
+                            status=event.get("status", ""),
+                        ),
+                    )
+                elif event_type == "agent_response":
+                    await event_emitter.emit(
+                        session_id,
+                        AgentResponseEvent(content=event.get("content", "")),
+                    )
+                elif event_type == "error":
+                    await event_emitter.emit(
+                        session_id,
+                        LogEvent(level=LogLevel.ERROR, message=event.get("message", "")),
+                    )
+                elif event_type == "log":
+                    level_str = event.get("level", "info")
+                    level = LogLevel.ERROR if level_str == "error" else (
+                        LogLevel.WARN if level_str == "warn" else LogLevel.INFO
+                    )
+                    await event_emitter.emit(
+                        session_id,
+                        LogEvent(level=level, message=event.get("message", "")),
+                    )
+                elif event_type == "trace_url":
+                    await event_emitter.emit(
+                        session_id,
+                        TraceUrlEvent(url=event.get("url", "")),
+                    )
+                elif event_type == "human_action_required":
+                    await event_emitter.emit(
+                        session_id,
+                        HumanActionEvent(
+                            description=event.get("description", "Action required"),
+                            reason=event.get("reason", ""),
+                            steps=event.get("steps", []),
+                        ),
+                    )
+                elif event_type == "paused":
+                    session = load_session(session_id)
+                    if session:
+                        session.status = SessionStatus.PAUSED
+                        session.pause_context = {"reason": event.get("reason", "")}
+                        save_session(session)
+                    await event_emitter.emit(
+                        session_id,
+                        PausedEvent(reason=event.get("reason", "")),
+                    )
+                    logger.info(f"Session {session_id} paused: {event.get('reason')}")
+                    return
 
-                logger.info(f"ADK orchestration complete for session {session_id}")
-            else:
-                # Use original orchestrator loop
-                await run_recreation_loop(session)
+            logger.info(f"ADK orchestration complete for session {session_id}")
 
     except Exception as e:
         import traceback
@@ -333,8 +320,8 @@ async def cancel_session_endpoint(session_id: str) -> Session:
             detail=f"Cannot cancel session in {session.status} state",
         )
 
-    # Use orchestrator's cancel to properly emit events
-    await cancel_recreation(session)
+    # Cancel ADK session and emit events
+    await cancel_adk_session(session_id)
 
     # Reload to get updated state
     session = load_session(session_id)
@@ -360,13 +347,8 @@ async def resume_session(
             detail=f"Cannot resume session in {session.status} state",
         )
 
-    # Check if this was an ADK session
-    if session.pause_context and session.pause_context.get("use_adk"):
-        # Resume via ADK message
-        background_tasks.add_task(resume_adk_session, session_id)
-    else:
-        # Old orchestrator
-        background_tasks.add_task(run_recreation_loop, session)
+    # Resume via ADK message
+    background_tasks.add_task(resume_adk_session, session_id)
 
     # Return current state (will be updated by background task)
     return session
@@ -440,10 +422,7 @@ Continue the song recreation workflow from where you left off."""
             session = load_session(session_id)
             if session:
                 session.status = SessionStatus.PAUSED
-                session.pause_context = {
-                    "use_adk": True,
-                    "reason": event.get("reason", ""),
-                }
+                session.pause_context = {"reason": event.get("reason", "")}
                 save_session(session)
             await event_emitter.emit(
                 session_id,
