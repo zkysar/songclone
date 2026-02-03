@@ -26,6 +26,13 @@ from songclone.orchestrator.tools import (
     recommend_vst,
     transpose_midi,
 )
+from songclone.orchestrator.stem_tools import (
+    fetch_sample,
+    search_drum_samples,
+    search_instrument_samples,
+    search_samples,
+    search_similar_tracks,
+)
 
 INSTRUCTION = """You are a song recreation orchestrator. Your job is to recreate songs
 using REAPER DAW through an iterative refinement process.
@@ -80,6 +87,30 @@ For pitch/timing issues:
 - get_midi_summary: Understand the MIDI content (note count, pitch range, velocity, density)
 - transpose_midi: Fix pitch problems by shifting notes up/down by semitones
 - quantize_midi: Fix timing issues by snapping notes to a rhythmic grid
+
+## Real Audio Sample Tools (Epidemic Sound)
+When synthesized sounds aren't cutting it, fetch REAL audio samples:
+
+- search_drum_samples(drum_type, style): Find real drum one-shots
+  Example: search_drum_samples("snare", "punchy") → finds crisp snare samples
+  drum_type: "kick", "snare", "hihat", "tom", "cymbal", "clap", "percussion"
+
+- search_samples(query, sample_type): General sample search
+  sample_type="sfx" for one-shots, "track" for full music with stems
+
+- search_instrument_samples(instrument, genre, mood, bpm): Find instrument loops
+  Returns tracks that may have separate stems available
+
+- fetch_sample(sample_id, sample_type): Download sample to local file
+  Returns local_path that can be used in REAPER
+
+- search_similar_tracks(reference_track_id): Find similar tracks
+
+USE THESE WHEN:
+- Drums sound fake/synthetic despite VST changes
+- You need a specific real instrument sound
+- Evaluation feedback mentions "sounds artificial" or "wrong timbre"
+- The separated original stem sounds better than any synth
 
 IMPORTANT: Always pass session_id to execute_plan and generate_plan.
 The analysis cache holds results that will be included in the planning prompt.
@@ -136,5 +167,11 @@ root_agent = Agent(
         get_midi_summary,
         transpose_midi,
         quantize_midi,
+        # Real audio sample tools (Epidemic Sound)
+        search_samples,
+        search_drum_samples,
+        search_instrument_samples,
+        search_similar_tracks,
+        fetch_sample,
     ],
 )

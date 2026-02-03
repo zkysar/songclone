@@ -207,6 +207,7 @@ async def run_orchestrator_with_adk(
 - Use get_midi_summary(session_id, stem_name) to understand MIDI content
 - Use transpose_midi/quantize_midi to modify MIDI between iterations
 - When evaluation suggests tools (via suggested_tools), RUN THEM before re-planning
+- If drums/instruments sound fake, use search_drum_samples or search_samples to get REAL audio
 
 ## Workflow - FOLLOW EXACTLY
 For iteration N:
@@ -216,7 +217,7 @@ For iteration N:
    - This retrieves the plan from session - NO need to pass plan JSON!
    - Use render_1.wav for iteration 1, render_2.wav for iteration 2, etc.
 3. evaluate_recreation(original_path="{original_audio_path}", recreation_path="{output_dir}/render_N.wav", iteration=N)
-4. If feedback includes suggested_tools, run those analysis tools
+4. If feedback includes suggested_tools, run those tools (analysis OR sample fetching)
 5. If score < {quality_threshold * 100:.0f}% and N < {max_iterations}, continue to iteration N+1
 
 Begin now with iteration 1:

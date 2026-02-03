@@ -70,7 +70,7 @@ class FeedbackItem(BaseModel):
     suggestion: str = Field(..., description="Actionable improvement suggestion")
     suggested_tools: list[str] = Field(
         default_factory=list,
-        description="Analysis tools to run: analyze_genre, analyze_spectral, analyze_instrument, decompose_drums, analyze_effects, recommend_vst",
+        description="Tools to run: analyze_genre, analyze_spectral, analyze_instrument, decompose_drums, analyze_effects, recommend_vst, search_drum_samples, search_samples, fetch_sample",
     )
 
 

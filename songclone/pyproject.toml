@@ -45,6 +45,8 @@ dependencies = [
     "aiofiles>=23.2.0",
     "mido>=1.3.0",  # MIDI file parsing
     "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",  # Epidemic Sound API client
+    "nest-asyncio>=1.6.0",  # For running async in sync contexts
 
     # Observability
     "langfuse>=3.0.0",

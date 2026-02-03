@@ -51,6 +51,19 @@ When providing feedback, suggest which analysis tools should be run to gather mo
 - **analyze_effects**: Run when mix/effects are off (e.g., "too dry", "too much reverb", "needs compression", "dynamics are wrong", "missing warmth")
 - **recommend_vst**: Run after analyze_instrument or analyze_genre to get specific VST/preset suggestions
 
+## Real Audio Sample Tools (Epidemic Sound)
+When VST synthesis cannot match the original sound, suggest fetching real audio samples:
+
+- **search_drum_samples**: Run when drums sound fake/artificial despite VST changes (e.g., "snare sounds synthetic", "kick lacks punch", "drums don't have the right character"). This fetches REAL drum samples.
+- **search_samples**: Run when any instrument sounds too artificial and needs a real audio sample instead of synthesis
+- **fetch_sample**: Run after search_drum_samples or search_samples to download the actual audio file
+
+IMPORTANT: Suggest sample tools when:
+- Drum sounds are unconvincing despite analysis and VST changes
+- The timbre cannot be replicated with available VSTs
+- Feedback mentions "sounds fake", "too synthetic", "lacks authenticity", "artificial"
+- Multiple iterations haven't fixed instrument sound quality
+
 ## Output Format
 Return a JSON object with this structure:
 {
@@ -84,7 +97,10 @@ Return a JSON object with this structure:
 - For tonal/EQ issues: suggest ["analyze_spectral"]
 - For drum pattern issues: suggest ["decompose_drums"]
 - For reverb/compression/mix issues: suggest ["analyze_effects"]
+- For fake/synthetic drum sounds: suggest ["search_drum_samples"] - this gets REAL samples
+- For artificial instrument sounds that VSTs can't fix: suggest ["search_samples"]
 - Multiple tools can be suggested for complex issues
+- After 2+ iterations with same instrument issue, escalate to sample tools
 
 ## Feedback Guidelines
 - Provide 3-5 feedback items, ordered by priority (1 = highest)
@@ -126,6 +142,13 @@ Return a JSON object with this structure:
       "issue": "Bass is too clean and synthetic",
       "suggestion": "Add saturation and warmth to bass",
       "suggested_tools": ["analyze_spectral", "analyze_instrument"]
+    },
+    {
+      "priority": 4,
+      "category": "instruments",
+      "issue": "Snare sounds fake and lifeless despite VST changes",
+      "suggestion": "Fetch a real snare sample that matches the punchy character of the original",
+      "suggested_tools": ["search_drum_samples"]
     }
   ],
   "stop_early": false,
