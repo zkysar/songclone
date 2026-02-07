@@ -90,7 +90,6 @@ def configure_reaper_ini(resource_path):
       - pythonlibpath64=<dir>
       - pythonlibdll64=<filename>
       - csurf entry for HTTP web interface on port 2307
-    Also registers the activate_reapy_server script and ext state.
     """
     ini_path = os.path.join(resource_path, "reaper.ini")
     with open(ini_path, "r", encoding="utf-8") as f:
@@ -138,9 +137,6 @@ def configure_reaper_ini(resource_path):
         with open(ini_path, "w", encoding="utf-8") as f:
             f.write(content)
 
-    # --- Register activate_reapy_server in reaper-kb.ini ---
-    _register_reapy_action(resource_path)
-
     return changed
 
 
@@ -169,20 +165,25 @@ def _find_reapy_activation_script():
 
 
 def _register_reapy_action(resource_path):
-    """Register the reapy activation script in reaper-kb.ini and reaper-extstate.ini."""
+    """Register the reapy activation script in reaper-kb.ini and reaper-extstate.ini.
+
+    Returns True if any files were changed (meaning REAPER needs a restart).
+    """
     import random
     import string
+
+    changed = False
 
     # Find the activate_reapy_server.py without importing reapy
     # (importing reapy triggers a connection attempt that would fail and poison state)
     script_path = _find_reapy_activation_script()
     if script_path is None:
         print("  (skipping action registration - reapy not installed yet)")
-        return
+        return False
 
     if not os.path.exists(script_path):
         print(f"  (skipping action registration - script not found at {script_path})")
-        return
+        return False
 
     # Check if already registered in reaper-kb.ini
     kb_path = os.path.join(resource_path, "reaper-kb.ini")
@@ -200,7 +201,7 @@ def _register_reapy_action(resource_path):
                 action_name = f'"_{code}"'
                 break
         else:
-            return
+            return False
     else:
         # Generate unique action code and register
         chars = string.ascii_letters + string.digits
@@ -213,6 +214,7 @@ def _register_reapy_action(resource_path):
         with open(kb_path, "a") as f:
             f.write(new_line + "\n")
         action_name = f'"_{code}"'
+        changed = True
         print(f"  Registered reapy action in reaper-kb.ini")
 
     # Write ext state so reapy can find the action
@@ -230,7 +232,10 @@ def _register_reapy_action(resource_path):
         ext_content += f"activate_reapy_server={action_name}\n"
         with open(extstate_path, "w") as f:
             f.write(ext_content)
+        changed = True
         print(f"  Wrote reapy ext state")
+
+    return changed
 
 
 def _insert_in_reaper_section(content, line):
@@ -259,6 +264,8 @@ def _activate_reapy_via_web(resource_path):
 
     This must run BEFORE `import reapy` because reapy's import-time connection
     attempt will infinitely recurse if the reapy TCP server isn't already running.
+
+    Returns True on success, False on failure (caller should retry after restart).
     """
     from urllib import request as urlreq
     from urllib.error import URLError
@@ -273,11 +280,10 @@ def _activate_reapy_via_web(resource_path):
         parts = text.strip().split("\t")
         if len(parts) >= 4 and parts[3]:
             print(f"  reapy server already running on port {parts[3]}")
-            return
+            return True
     except (URLError, OSError):
         print("  ✗ Web interface not responding on port 2307")
-        print("    Make sure REAPER was restarted after configuration.")
-        sys.exit(1)
+        return False
 
     # Server not running - trigger the activation action
     try:
@@ -286,18 +292,18 @@ def _activate_reapy_via_web(resource_path):
         parts = text.strip().split("\t")
         if len(parts) < 4 or not parts[3]:
             print("  ✗ activate_reapy_server action not found in REAPER ext state")
-            sys.exit(1)
+            return False
         action = parts[3].strip('"')
     except (URLError, OSError) as e:
         print(f"  ✗ Failed to read ext state: {e}")
-        sys.exit(1)
+        return False
 
     # Call the action
     try:
         urlreq.urlopen(f"{base_url}/{action}", timeout=2)
     except (URLError, OSError) as e:
         print(f"  ✗ Failed to trigger activation action: {e}")
-        sys.exit(1)
+        return False
 
     # Wait for server to come up
     for i in range(10):
@@ -308,14 +314,12 @@ def _activate_reapy_via_web(resource_path):
             parts = text.strip().split("\t")
             if len(parts) >= 4 and parts[3]:
                 print(f"  ✓ reapy server activated on port {parts[3]}")
-                return
+                return True
         except (URLError, OSError):
             pass
 
     print("  ✗ reapy server didn't start after activation")
-    print("    REAPER may not have Python configured correctly.")
-    print("    Check: REAPER > Preferences > Plug-ins > ReaScript")
-    sys.exit(1)
+    return False
 
 
 def restart_reaper():
@@ -375,35 +379,74 @@ def ensure_reapy():
 # Main
 # =============================================================================
 
-# 0. CHECK REAPER
+# 1. CHECK REAPER
 print("=== Checking for REAPER ===")
 if not is_reaper_running():
     print("✗ REAPER is not running! Start it first, then re-run.")
     sys.exit(1)
 print("✓ REAPER is running")
 
-# 1. CONFIGURE reaper.ini DIRECTLY (bypasses reapy's buggy ConfigParser)
+# 2. ENSURE REAPY INSTALLED (without importing — import triggers connection)
+print("\n=== Ensuring reapy is installed ===")
+result = subprocess.run(
+    [sys.executable, "-m", "pip", "show", "python-reapy"],
+    capture_output=True, text=True,
+)
+if result.returncode != 0:
+    install_package("python-reapy")
+else:
+    print("  ✓ python-reapy already installed")
+
+# 3. CONFIGURE reaper.ini (bypasses reapy's buggy ConfigParser)
 print("\n=== Configuring reaper.ini ===")
 resource_path = get_reaper_resource_path()
 print(f"  Resource path: {resource_path}")
-changed = configure_reaper_ini(resource_path)
-if changed:
-    print("  ✓ Config updated")
+ini_changed = configure_reaper_ini(resource_path)
+if ini_changed:
+    print("  ✓ reaper.ini updated")
 else:
-    print("  ✓ Config already correct, no changes needed")
+    print("  ✓ reaper.ini already correct")
 
-# 2. RESTART REAPER IF CONFIG CHANGED
-if changed:
+# 4. REGISTER REAPY ACTION in reaper-kb.ini / reaper-extstate.ini
+print("\n=== Registering reapy action ===")
+action_changed = _register_reapy_action(resource_path)
+if action_changed:
+    print("  ✓ Action registration updated")
+else:
+    print("  ✓ Action already registered")
+
+# 5. RESTART REAPER IF ANY CONFIG FILES CHANGED
+if ini_changed or action_changed:
     print("\n=== Restarting REAPER to load new config ===")
     restart_reaper()
+else:
+    # Config didn't change, but REAPER may not have been restarted since last config.
+    # Check if the web interface is actually responding.
+    from urllib import request as urlreq
+    from urllib.error import URLError
+    try:
+        urlreq.urlopen(f"http://localhost:{WEB_INTERFACE_PORT}/_/GET/EXTSTATE/reapy/server_port", timeout=2)
+    except (URLError, OSError):
+        print("\n=== Restarting REAPER (web interface not loaded yet) ===")
+        restart_reaper()
 
-# 3. ACTIVATE REAPY SERVER VIA WEB INTERFACE
+# 6. ACTIVATE REAPY SERVER VIA WEB INTERFACE (with restart-on-failure retry)
 #    Must happen BEFORE `import reapy` because reapy's import triggers a
 #    connection attempt that infinitely recurses if the server isn't running.
 print("\n=== Activating reapy server ===")
-_activate_reapy_via_web(resource_path)
+activated = _activate_reapy_via_web(resource_path)
+if not activated:
+    # REAPER might be running but hasn't loaded the action list from disk.
+    # Restart and retry once.
+    print("\n=== Restarting REAPER and retrying activation ===")
+    restart_reaper()
+    activated = _activate_reapy_via_web(resource_path)
+    if not activated:
+        print("  ✗ reapy server failed to start after restart")
+        print("    Check: REAPER > Preferences > Plug-ins > ReaScript")
+        sys.exit(1)
 
-# 4. ENSURE REAPY INSTALLED & TEST CONNECTION
+# 7. TEST CONNECTION (safe to import reapy now that the server is running)
 print("\n=== Testing connection ===")
 reapy = ensure_reapy()
 print(f"  reapy {reapy.__version__}")
